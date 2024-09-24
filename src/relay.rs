@@ -1,40 +1,44 @@
-use std::{
-    io::{prelude::*, BufRead, BufReader},
+use tokio::io::AsyncWriteExt;
+use tokio::{
     net::{TcpListener, TcpStream},
+    time::{sleep, Duration},
 };
+use tracing::{error, info};
 
-use crate::workers::ThreadPool;
+use crate::{config::Config, Result};
 
-pub fn start_relay_server() {
-    let port = "9001";
-    let address = format!("127.0.0.1:{}", port);
-    let listener = TcpListener::bind(address.as_str()).unwrap();
-    let pool = ThreadPool::new(4);
+pub async fn start_relay_server(config: &Config) -> Result<()> {
+    info!("Starting relay server...");
+    let address = format!("0.0.0.0:{}", config.tunnel_port);
+    let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
-    for stream in listener.incoming() {
-        let st = stream.unwrap();
+    info!("Webhook relay server started at {}", address);
 
-        pool.execute(|| {
-            handle_connection(st);
-        });
+    loop {
+        let res = listener.accept().await;
+        match res {
+            Ok((stream, addr)) => {
+                info!("Connection established: {:?}", addr);
+                tokio::spawn(handle_client(stream));
+            }
+            Err(e) => {
+                error!("Error accepting connection: {:?}", e);
+                break;
+            }
+        }
     }
+
+    Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let reader = BufReader::new(&mut stream);
-    let request_line = reader.lines().next().unwrap().unwrap();
+async fn handle_client(mut stream: TcpStream) {
+    loop {
+        info!("Sending PING to client...");
+        if let Err(e) = stream.write_all(b"PING\n").await {
+            error!("Error writing to stream: {:?}", e);
+            break;
+        }
 
-    println!("{}", request_line);
-
-    let (status_line, contents) = match request_line.as_str() {
-        "GET / HTTP/1.1" => ("HTTP/1.1 200 OK", "OK"),
-        "GET /webhook HTTP/1.1" => ("HTTP/1.1 200 OK", "OK"),
-        "POST /webhook HTTP/1.1" => ("HTTP/1.1 200 OK", "OK"),
-        _ => ("HTTP/1.1 404 NOT FOUND", "Not Found"),
-    };
-
-    let length = contents.len();
-
-    let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
-    stream.write_all(response.as_bytes()).unwrap();
+        sleep(Duration::from_secs(60)).await;
+    }
 }
