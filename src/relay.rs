@@ -1,18 +1,14 @@
 use std::{
-    io::{prelude::*, BufReader},
+    io::{prelude::*, BufRead, BufReader},
     net::{TcpListener, TcpStream},
 };
 
-use tracing::info;
+use crate::workers::ThreadPool;
 
-use crate::{config::ServerConfig, workers::ThreadPool};
-
-pub fn start_web_server(config: &ServerConfig) {
-    let address = format!("0.0.0.0:{}", config.web_port);
+pub fn start_relay_server() {
+    let port = "9001";
+    let address = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(address.as_str()).unwrap();
-
-    info!("Webhook web server started at {}", address);
-
     let pool = ThreadPool::new(4);
 
     for stream in listener.incoming() {
