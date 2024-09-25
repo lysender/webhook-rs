@@ -1,4 +1,4 @@
-use std::process;
+use std::{process, sync::Arc};
 
 mod config;
 mod error;
@@ -11,6 +11,7 @@ use config::Config;
 pub use error::{Error, Result};
 
 use relay::start_relay_server;
+use tokio::{net::TcpStream, sync::Mutex};
 use tracing::error;
 use web::start_web_server;
 
@@ -34,7 +35,12 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let config = Config::build()?;
-    let res = tokio::try_join!(start_relay_server(&config), start_web_server(&config));
+    let client: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+
+    let res = tokio::try_join!(
+        start_relay_server(client.clone(), &config),
+        start_web_server(client.clone(), &config)
+    );
     if let Err(e) = res {
         let msg = format!("Error starting servers: {e}");
         error!("{}", msg);
