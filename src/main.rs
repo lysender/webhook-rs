@@ -1,42 +1,53 @@
-use std::{
-    fs,
-    io::{prelude::*, BufReader},
-    net::{TcpListener, TcpStream},
-};
+use std::{process, sync::Arc};
 
-mod workers;
+mod client;
+mod config;
+mod error;
+mod tunnel;
+mod web;
 
-use workers::ThreadPool;
+use client::TunnelClient;
+use config::Config;
 
-fn main() {
-    let port = "7878";
-    let address = format!("127.0.0.1:{}", port);
-    let listener = TcpListener::bind(address.as_str()).unwrap();
-    let pool = ThreadPool::new(4);
+// Re-exports
+pub use error::{Error, Result};
 
-    for stream in listener.incoming() {
-        let st = stream.unwrap();
+use tokio::sync::Mutex;
+use tracing::error;
+use tunnel::start_tunnel_server;
+use web::start_web_server;
 
-        pool.execute(|| {
-            handle_connection(st);
-        });
+#[tokio::main]
+async fn main() {
+    // Set the RUST_LOG, if it hasn't been explicitly defined
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "webhook_rs=info")
+    }
+
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .compact()
+        .init();
+
+    if let Err(e) = run().await {
+        eprintln!("Application error: {e}");
+        process::exit(1);
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let reader = BufReader::new(&mut stream);
-    let request_line = reader.lines().next().unwrap().unwrap();
+async fn run() -> Result<()> {
+    let config = Config::build()?;
+    let client = Arc::new(Mutex::new(TunnelClient::new()));
 
-    println!("{}", request_line);
+    let res = tokio::try_join!(
+        start_tunnel_server(client.clone(), &config),
+        start_web_server(client.clone(), &config)
+    );
+    if let Err(e) = res {
+        let msg = format!("Error starting servers: {e}");
+        error!("{}", msg);
+        return Err(Error::AnyError(msg));
+    }
 
-    let (status_line, filename) = match request_line.as_str() {
-        "GET / HTTP/1.1" => ("HTTP/1.1 200 OK", "templates/hello.html"),
-        _ => ("HTTP/1.1 404 NOT FOUND", "templates/404.html"),
-    };
-
-    let contents = fs::read_to_string(filename).unwrap();
-    let length = contents.len();
-
-    let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
-    stream.write_all(response.as_bytes()).unwrap();
+    Ok(())
 }
