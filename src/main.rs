@@ -1,18 +1,20 @@
 use std::{process, sync::Arc};
 
+mod client;
 mod config;
 mod error;
-mod relay;
+mod tunnel;
 mod web;
 
+use client::TunnelClient;
 use config::Config;
 
 // Re-exports
 pub use error::{Error, Result};
 
-use relay::start_relay_server;
-use tokio::{net::TcpStream, sync::Mutex};
+use tokio::sync::Mutex;
 use tracing::error;
+use tunnel::start_tunnel_server;
 use web::start_web_server;
 
 #[tokio::main]
@@ -35,10 +37,10 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let config = Config::build()?;
-    let client: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+    let client = Arc::new(Mutex::new(TunnelClient::new()));
 
     let res = tokio::try_join!(
-        start_relay_server(client.clone(), &config),
+        start_tunnel_server(client.clone(), &config),
         start_web_server(client.clone(), &config)
     );
     if let Err(e) = res {
