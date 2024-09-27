@@ -38,7 +38,7 @@ pub fn verify_auth_token(token: &str, secret: &str) -> Result<()> {
         return Err(Error::InvalidAuthToken);
     };
 
-    if decoded.claims.sub.len() == 0 {
+    if decoded.claims.sub.as_str() != "AUTH" {
         return Err(Error::InvalidAuthToken);
     }
 
