@@ -1,17 +1,13 @@
-use std::{
-    io::{BufRead, BufReader, Write},
-    thread,
-    time::Duration,
-};
+use std::{thread, time::Duration};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
 
 use tracing::{error, info};
 
-use crate::{config::ClientConfig, Result};
+use crate::{config::ClientConfig, Error, Result};
 
 pub async fn start_client(config: &ClientConfig) {
     loop {
@@ -56,22 +52,28 @@ async fn handle_connection(mut stream: TcpStream) -> Result<()> {
         return Err(msg.into());
     }
 
-    // Infinitely read data from the stream
-    loop {
-        info!("Reading data from stream...");
-        // Check if we are properly authenticated
-        let mut buffer = [0; 1024];
-        if let Ok(n) = reader.read(&mut buffer).await {
-            if n > 0 {
-                // This may be just a partial body but may be enough for auth
-                let message = String::from_utf8_lossy(&buffer[..n]).to_string();
-                info!("Received message: {}", message);
+    let mut buf_reader = BufReader::new(reader);
+    let mut line = String::new();
 
-                if let Some(first_line) = message.lines().next() {
-                    if let Err(auth_err) = handle_auth_response(first_line).await {
-                        return Err(auth_err);
-                    }
+    loop {
+        line.clear();
+
+        match buf_reader.read_line(&mut line).await {
+            Ok(0) => {
+                // Connection closed
+                break;
+            }
+            Ok(_) => {
+                // Received some message
+                let msg = line.trim();
+                info!("Received message: {}", msg);
+                if let Err(auth_err) = handle_auth_response(msg).await {
+                    return Err(auth_err);
                 }
+            }
+            Err(e) => {
+                let msg = format!("Failed to read from server stream: {}", e);
+                return Err(msg.into());
             }
         }
     }
