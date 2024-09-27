@@ -9,6 +9,9 @@ pub enum Error {
     AnyError(String),
     JsonParseError(String),
     ServiceError(String),
+    NoClientError,
+    ClientReadError(String),
+    ClientWriteError(String),
 }
 
 #[derive(Deserialize)]
@@ -32,6 +35,9 @@ impl core::fmt::Display for Error {
             Self::AnyError(val) => write!(f, "{}", val),
             Self::JsonParseError(val) => write!(f, "{}", val),
             Self::ServiceError(val) => write!(f, "{}", val),
+            Self::NoClientError => write!(f, "No connected client"),
+            Self::ClientReadError(val) => write!(f, "{}", val),
+            Self::ClientWriteError(val) => write!(f, "{}", val),
         }
     }
 }

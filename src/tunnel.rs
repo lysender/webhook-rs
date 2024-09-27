@@ -1,17 +1,12 @@
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
-use tokio::{
-    net::{TcpListener, TcpStream},
-    time::{sleep, Duration},
-};
 use tracing::{error, info};
 
 use crate::client::TunnelClient;
 use crate::{config::Config, Result};
 
 pub async fn start_tunnel_server(tunnel: Arc<Mutex<TunnelClient>>, config: &Config) -> Result<()> {
-    info!("Starting tunnel server...");
     let address = format!("0.0.0.0:{}", config.tunnel_port);
     let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
@@ -59,25 +54,23 @@ async fn handle_client(tunnel: Arc<Mutex<TunnelClient>>, stream: TcpStream) -> R
 
         if valid_auth(message) {
             // Send response to client
-            if let Err(reply_err) = client.write(b"WEBHOOK/1.0 AUTH-OK\n").await {
-                error!("Sending AUTH-OK reply failed: {}", reply_err);
+            if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\n").await {
+                error!("Sending OK reply failed: {}", reply_err);
                 return Ok(());
             } else {
                 info!("Client authenticated successfully.");
                 client.verify();
             }
+        } else {
+            info!("Client authentication failed.");
+
+            // Send auth failed error to client
+            if let Err(reply_err) = client.write(b"WEBHOOK/1.0 401 Unauthorized\n").await {
+                error!("Sending Unauthorized reply failed: {}", reply_err);
+                return Ok(());
+            }
         }
     }
-
-    //loop {
-    //    info!("Sending PING to client...");
-    //    if let Err(e) = stream.write_all(b"PING\n").await {
-    //        error!("Error writing to stream: {:?}", e);
-    //        break;
-    //    }
-    //
-    //    sleep(Duration::from_secs(60)).await;
-    //}
 
     Ok(())
 }
@@ -89,10 +82,10 @@ fn valid_auth(message: String) -> bool {
         return false;
     }
 
-    if lines[0] == "WEBHOOK/1.0 AUTH" {
+    if lines[0] == "AUTH /auth WEBHOOK/1.0" {
         // Dummy authentication for now
         // TODO: Add authentication logic later
-        return lines[1] == "jwt_token";
+        return lines[1] == "Authorization: jwt_token";
     }
 
     return false;

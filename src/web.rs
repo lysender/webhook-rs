@@ -9,10 +9,10 @@ use tokio::{
 use tracing::{error, info};
 
 use crate::client::TunnelClient;
+use crate::Error;
 use crate::{config::Config, Result};
 
 pub async fn start_web_server(tunnel: Arc<Mutex<TunnelClient>>, config: &Config) -> Result<()> {
-    info!("Starting web server...");
     let address = format!("0.0.0.0:{}", config.web_port);
     let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
@@ -37,7 +37,7 @@ pub async fn start_web_server(tunnel: Arc<Mutex<TunnelClient>>, config: &Config)
     Ok(())
 }
 
-async fn handle_connection(tunnel: Arc<Mutex<TunnelClient>>, mut stream: TcpStream) -> () {
+async fn handle_connection(tunnel: Arc<Mutex<TunnelClient>>, mut stream: TcpStream) {
     let reader = BufReader::new(&mut stream);
     let request_line = reader.lines().next_line().await.unwrap().unwrap();
 
@@ -62,39 +62,44 @@ async fn handle_connection(tunnel: Arc<Mutex<TunnelClient>>, mut stream: TcpStre
     }
 }
 
-async fn forward_request(tunnel: Arc<Mutex<TunnelClient>>, mut stream: TcpStream) -> Result<()> {
+async fn forward_request(tunnel: Arc<Mutex<TunnelClient>>, stream: TcpStream) -> Result<()> {
     let mut client = tunnel.lock().await;
 
     // Do not send down requests if client is not yet authenticated
     if client.is_verified() {
         if let Err(write_err) = client.write(b"YOU GOT MAIL\n").await {
-            // Failed to write to client
-            let status_line = "HTTP/1.1 503 Service Unavailable";
-            let contents = format!("Service Unavailable\n{}\n", write_err);
-            let length = contents.len();
-
-            let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
-
-            stream.write_all(response.as_bytes()).await.unwrap();
-            return Ok(());
+            return forward_error(stream, Some(write_err)).await;
         } else {
-            let status_line = "HTTP/1.1 200 OK";
-            let contents = "OK";
-            let length = contents.len();
-
-            let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
-
-            stream.write_all(response.as_bytes()).await.unwrap();
-            return Ok(());
+            return forward_success(stream).await;
         }
     } else {
-        let status_line = "HTTP/1.1 503 Service Unavailable";
-        let contents = "Service Unavailable\n";
-        let length = contents.len();
-
-        let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
-
-        stream.write_all(response.as_bytes()).await.unwrap();
-        return Ok(());
+        return forward_error(stream, None).await;
     }
+}
+
+async fn forward_success(mut stream: TcpStream) -> Result<()> {
+    let status_line = "HTTP/1.1 200 OK";
+    let contents = "OK";
+    let length = contents.len();
+
+    let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+
+    stream.write_all(response.as_bytes()).await.unwrap();
+    return Ok(());
+}
+
+async fn forward_error(mut stream: TcpStream, error: Option<Error>) -> Result<()> {
+    let status_line = "HTTP/1.1 503 Service Unavailable";
+    let write_err: String = match error {
+        Some(err) => format!(": {}", err),
+        None => "".to_string(),
+    };
+    let contents = format!("Service Unavailable{}\n", write_err);
+    let length = contents.len();
+
+    let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+
+    stream.write_all(response.as_bytes()).await.unwrap();
+
+    Ok(())
 }
