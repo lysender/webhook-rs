@@ -1,68 +1,88 @@
+use std::{
+    io::{BufRead, BufReader, Write},
+    thread,
+    time::Duration,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
+    sync::Mutex,
 };
 
-use crate::Result;
+use tracing::{error, info};
 
-pub struct TunnelClient {
-    stream: Option<TcpStream>,
-    verified: bool,
+use crate::{config::ClientConfig, Result};
+
+pub async fn start_client(config: &ClientConfig) {
+    loop {
+        let conn = connect(&config).await;
+        if let Err(e) = conn {
+            error!("Connection error: {}", e);
+            info!("Reconnecting in 10 seconds...");
+
+            thread::sleep(Duration::from_secs(10));
+        }
+    }
 }
 
-impl TunnelClient {
-    pub fn new() -> Self {
-        TunnelClient {
-            stream: None,
-            verified: false,
+async fn connect(config: &ClientConfig) -> Result<()> {
+    let stream_res = TcpStream::connect(&config.tunnel_address).await;
+    match stream_res {
+        Ok(stream) => {
+            info!("Connected to server...");
+            if let Err(conn_err) = handle_connection(stream).await {
+                return Err(conn_err);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let connect_err = format!("Error connecting to the server: {}", e);
+            Err(connect_err.into())
         }
     }
+}
 
-    pub fn with_stream(stream: TcpStream) -> Self {
-        Self {
-            stream: Some(stream),
-            verified: false,
-        }
+async fn handle_connection(mut stream: TcpStream) -> Result<()> {
+    let (mut reader, mut writer) = stream.split();
+
+    info!("Authenticating to server...");
+
+    // Before reading incoming messages, send a message to the server first
+    let auth_msg = format!("AUTH /auth WEBHOOK/1.0\r\nAuthorization: jwt_token\n");
+    let write_res = writer.write_all(auth_msg.as_bytes()).await;
+
+    if let Err(write_err) = write_res {
+        let msg = format!("Authenticating to server failed: {}", write_err);
+        return Err(msg.into());
     }
 
-    pub fn verify(&mut self) {
-        self.verified = true;
-    }
+    // Infinitely read data from the stream
+    loop {
+        info!("Reading data from stream...");
+        // Check if we are properly authenticated
+        let mut buffer = [0; 1024];
+        if let Ok(n) = reader.read(&mut buffer).await {
+            if n > 0 {
+                // This may be just a partial body but may be enough for auth
+                let message = String::from_utf8_lossy(&buffer[..n]).to_string();
+                info!("Received message: {}", message);
 
-    pub fn is_connected(&self) -> bool {
-        self.stream.is_some()
-    }
-
-    pub fn is_verified(&self) -> bool {
-        self.verified && self.is_connected()
-    }
-
-    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if let Some(stream) = self.stream.as_mut() {
-            return match stream.read(buf).await {
-                Ok(n) => Ok(n),
-                Err(e) => {
-                    let msg = format!("Read client stream failed: {}", e);
-                    Err(msg.into())
+                if let Some(first_line) = message.lines().next() {
+                    if let Err(auth_err) = handle_auth_response(first_line).await {
+                        return Err(auth_err);
+                    }
                 }
-            };
+            }
         }
-
-        // No connection yet
-        return Err("Read client stream failed: no client connection yet.".into());
     }
 
-    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
-        if let Some(stream) = self.stream.as_mut() {
-            return match stream.write_all(data).await {
-                Ok(_) => Ok(()),
-                Err(write_err) => {
-                    let msg = format!("Write to client stream failed: {}", write_err);
-                    Err(msg.into())
-                }
-            };
-        }
+    Ok(())
+}
 
-        Err("Write to client stream failed: no client connection yet.".into())
+async fn handle_auth_response(message: &str) -> Result<()> {
+    match message {
+        "WEBHOOK/1.0 200 OK" => Ok(()),
+        "WEBHOOK/1.0 401 Unauthorized" => Err("Authentication failed".into()),
+        _ => Ok(()),
     }
 }

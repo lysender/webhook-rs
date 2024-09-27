@@ -8,8 +8,8 @@ use tokio::{
 
 use tracing::{error, info};
 
-use crate::client::TunnelClient;
 use crate::config::ServerConfig;
+use crate::tunnel::TunnelClient;
 use crate::Error;
 use crate::Result;
 
