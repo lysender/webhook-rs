@@ -1,17 +1,17 @@
-# webhook-rs: Exposes your localhost webhooks to the world
+# webhook-rs: Your app's back door
 
-## Overview
+Exposes your private endpoints to the world.
 
-I just needed a way to expose my Github webhooks to the internet
-while developing applications locally.
+## Motivation
 
-There are already some great tools like `ngrok` but they are paid solutions.
-Using SSH proxy might actually work but I don't like a complicated setup
-since I'm on Windows. I need something that I can run anytime and stop anytime too.
+I needed a tool to expose a Github webhook endpoint for local
+development purposes. Some paid solutions already exist but they are
+not really worth it since I just need to run the tool once in a while.
 
-Since I already have my own cloud server, I decided to just develop a simple
-proxy/tunnel (or whatever you call it) that forwards requests to my local machine
-and send the response back.
+I wrote this tool for a very simple use case:
+- Run the server version of the app on a cloud server
+- Run the client version of the app locally
+- Stop the apps when done
 
 ## Server
 
