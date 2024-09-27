@@ -1,13 +1,12 @@
 use std::{thread, time::Duration};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{TcpListener, TcpStream},
-    sync::Mutex,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::TcpStream,
 };
 
 use tracing::{error, info};
 
-use crate::{config::ClientConfig, Error, Result};
+use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(config: &ClientConfig) {
     loop {
@@ -26,7 +25,7 @@ async fn connect(config: &ClientConfig) -> Result<()> {
     match stream_res {
         Ok(stream) => {
             info!("Connected to server...");
-            if let Err(conn_err) = handle_connection(stream).await {
+            if let Err(conn_err) = handle_connection(config, stream).await {
                 return Err(conn_err);
             }
             Ok(())
@@ -38,13 +37,14 @@ async fn connect(config: &ClientConfig) -> Result<()> {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream) -> Result<()> {
-    let (mut reader, mut writer) = stream.split();
+async fn handle_connection(config: &ClientConfig, mut stream: TcpStream) -> Result<()> {
+    let (reader, mut writer) = stream.split();
 
     info!("Authenticating to server...");
 
     // Before reading incoming messages, send a message to the server first
-    let auth_msg = format!("AUTH /auth WEBHOOK/1.0\r\nAuthorization: jwt_token\n");
+    let token = create_auth_token(&config.jwt_secret)?;
+    let auth_msg = format!("AUTH /auth WEBHOOK/1.0\r\nAuthorization: {}\n", token);
     let write_res = writer.write_all(auth_msg.as_bytes()).await;
 
     if let Err(write_err) = write_res {
@@ -66,10 +66,8 @@ async fn handle_connection(mut stream: TcpStream) -> Result<()> {
             Ok(_) => {
                 // Received some message
                 let msg = line.trim();
-                info!("Received message: {}", msg);
-                if let Err(auth_err) = handle_auth_response(msg).await {
-                    return Err(auth_err);
-                }
+                let _ = handle_auth_response(msg)?;
+                info!("Authentication to server successful.");
             }
             Err(e) => {
                 let msg = format!("Failed to read from server stream: {}", e);
@@ -81,7 +79,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<()> {
     Ok(())
 }
 
-async fn handle_auth_response(message: &str) -> Result<()> {
+fn handle_auth_response(message: &str) -> Result<()> {
     match message {
         "WEBHOOK/1.0 200 OK" => Ok(()),
         "WEBHOOK/1.0 401 Unauthorized" => Err("Authentication failed".into()),

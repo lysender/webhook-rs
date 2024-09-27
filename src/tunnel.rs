@@ -6,8 +6,8 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use crate::config::ServerConfig;
-use crate::Result;
+use crate::{config::ServerConfig, Error};
+use crate::{token::verify_auth_token, Result};
 
 pub struct TunnelClient {
     stream: Option<TcpStream>,
@@ -82,6 +82,7 @@ pub async fn start_tunnel_server(
 
     loop {
         let tunnel_copy = tunnel.clone();
+        let config_copy = config.clone();
 
         // We only allow one client at a time, so whenever we have a new connection,
         // we just override the previous one.
@@ -89,7 +90,7 @@ pub async fn start_tunnel_server(
         match res {
             Ok((stream, addr)) => {
                 info!("Connection established: {:?}", addr);
-                tokio::spawn(handle_client(tunnel_copy, stream));
+                tokio::spawn(handle_client(config_copy, tunnel_copy, stream));
             }
             Err(e) => {
                 let mut client = tunnel_copy.lock().await;
@@ -104,7 +105,11 @@ pub async fn start_tunnel_server(
     Ok(())
 }
 
-async fn handle_client(tunnel: Arc<Mutex<TunnelClient>>, stream: TcpStream) -> Result<()> {
+async fn handle_client(
+    config: ServerConfig,
+    tunnel: Arc<Mutex<TunnelClient>>,
+    stream: TcpStream,
+) -> Result<()> {
     // Initialize stream connection but need to authenticate first
     {
         let mut client = tunnel.lock().await;
@@ -124,9 +129,8 @@ async fn handle_client(tunnel: Arc<Mutex<TunnelClient>>, stream: TcpStream) -> R
         }
         Ok(n) => {
             let message = String::from_utf8_lossy(&buffer[..n]).to_string();
-            info!(message);
 
-            if valid_auth(message.as_str()) {
+            if valid_auth(message.as_str(), &config.jwt_secret).is_ok() {
                 // Send response to client
                 if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\n").await {
                     error!("Sending OK reply failed: {}", reply_err);
@@ -154,22 +158,18 @@ async fn handle_client(tunnel: Arc<Mutex<TunnelClient>>, stream: TcpStream) -> R
     Ok(())
 }
 
-fn valid_auth(message: &str) -> bool {
-    // We expect 2 lines of data, the header command and the token
+fn valid_auth(message: &str, secret: &str) -> Result<()> {
+    // We expect 2 lines of data, the header command and the token header
     let lines: Vec<&str> = message.lines().collect();
     if lines.len() != 2 {
-        return false;
+        return Err(Error::InvalidAuthToken);
     }
 
-    if lines[0] == "AUTH /auth WEBHOOK/1.0" {
-        // Dummy authentication for now
-        // TODO: Add authentication logic later
-        return lines[1] == "Authorization: jwt_token";
+    if lines[0] == "AUTH /auth WEBHOOK/1.0" && lines[1].starts_with("Authorization: ") {
+        if let Some(token) = lines[1].split(' ').last() {
+            return verify_auth_token(token, secret);
+        }
     }
 
-    return false;
-}
-
-fn valid_token(token: &str) -> bool {
-    false
+    Err(Error::InvalidAuthToken)
 }
