@@ -66,6 +66,10 @@ async fn handle_connection(config: &ClientConfig, mut stream: TcpStream) -> Resu
             Ok(_) => {
                 // Received some message
                 let msg = line.trim();
+
+                // This check will run on all messages sent from the server
+                // like a webhook payload
+                // TODO: Fix this...
                 let _ = handle_auth_response(msg)?;
                 info!("Authentication to server successful.");
             }

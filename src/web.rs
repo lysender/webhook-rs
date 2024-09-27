@@ -61,7 +61,10 @@ async fn handle_connection(tunnel: Arc<Mutex<TunnelClient>>, mut stream: TcpStre
     } else {
         let length = contents.len();
 
-        let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+        let response = format!(
+            "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+            status_line, "text/plain; charset=UTF-8", length, contents
+        );
         stream.write_all(response.as_bytes()).await.unwrap();
     }
 }
@@ -86,7 +89,10 @@ async fn forward_success(mut stream: TcpStream) -> Result<()> {
     let contents = "OK";
     let length = contents.len();
 
-    let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+    let response = format!(
+        "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+        status_line, "text/plain; charset=UTF-8", length, contents
+    );
 
     stream.write_all(response.as_bytes()).await.unwrap();
     return Ok(());
@@ -101,7 +107,10 @@ async fn forward_error(mut stream: TcpStream, error: Option<Error>) -> Result<()
     let contents = format!("Service Unavailable{}\n", write_err);
     let length = contents.len();
 
-    let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+    let response = format!(
+        "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+        status_line, "text/plain; charset=UTF-8", length, contents
+    );
 
     stream.write_all(response.as_bytes()).await.unwrap();
 
