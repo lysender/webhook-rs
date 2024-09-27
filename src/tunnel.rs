@@ -4,9 +4,13 @@ use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use crate::client::TunnelClient;
-use crate::{config::Config, Result};
+use crate::config::ServerConfig;
+use crate::Result;
 
-pub async fn start_tunnel_server(tunnel: Arc<Mutex<TunnelClient>>, config: &Config) -> Result<()> {
+pub async fn start_tunnel_server(
+    tunnel: Arc<Mutex<TunnelClient>>,
+    config: &ServerConfig,
+) -> Result<()> {
     let address = format!("0.0.0.0:{}", config.tunnel_port);
     let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
@@ -89,4 +93,8 @@ fn valid_auth(message: String) -> bool {
     }
 
     return false;
+}
+
+fn valid_token(token: &str) -> bool {
+    false
 }

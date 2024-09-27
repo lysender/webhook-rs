@@ -1,13 +1,16 @@
+use clap::Parser;
 use std::{process, sync::Arc};
 
 mod client;
 mod config;
 mod error;
+mod token;
 mod tunnel;
+mod utils;
 mod web;
 
 use client::TunnelClient;
-use config::Config;
+use config::{AppArgs, Commands, ServerConfig, RUST_LOG};
 
 // Re-exports
 pub use error::{Error, Result};
@@ -20,8 +23,8 @@ use web::start_web_server;
 #[tokio::main]
 async fn main() {
     // Set the RUST_LOG, if it hasn't been explicitly defined
-    if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "webhook_rs=info")
+    if std::env::var(RUST_LOG).is_err() {
+        std::env::set_var(RUST_LOG, "webhook_rs=info")
     }
 
     tracing_subscriber::fmt()
@@ -29,14 +32,23 @@ async fn main() {
         .compact()
         .init();
 
-    if let Err(e) = run().await {
+    let args = AppArgs::parse();
+
+    if let Err(e) = run_command(args).await {
         eprintln!("Application error: {e}");
         process::exit(1);
     }
 }
 
-async fn run() -> Result<()> {
-    let config = Config::build()?;
+async fn run_command(args: AppArgs) -> Result<()> {
+    match args.command {
+        Commands::Server => run_server(args).await,
+        Commands::Client => run_client().await,
+    }
+}
+
+async fn run_server(args: AppArgs) -> Result<()> {
+    let config = ServerConfig::build(args.config.as_path())?;
     let client = Arc::new(Mutex::new(TunnelClient::new()));
 
     let res = tokio::try_join!(
@@ -49,5 +61,9 @@ async fn run() -> Result<()> {
         return Err(Error::AnyError(msg));
     }
 
+    Ok(())
+}
+
+async fn run_client() -> Result<()> {
     Ok(())
 }

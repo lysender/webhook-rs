@@ -1,35 +1,75 @@
-use dotenvy::dotenv;
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use std::env;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use crate::Result;
+use crate::{utils::valid_webhook_path, Error, Result};
 
-pub const WEB_PORT: &str = "WEB_PORT";
-pub const TUNNEL_PORT: &str = "TUNNEL_PORT";
+pub const RUST_LOG: &str = "RUST_LOG";
 
 #[derive(Clone, Deserialize)]
-pub struct Config {
+pub struct ServerConfig {
     pub web_port: u16,
     pub tunnel_port: u16,
+    pub webhook_path: String,
+    pub jwt_secret: String,
 }
 
-impl Config {
-    pub fn build() -> Result<Config> {
-        dotenv().ok();
+impl ServerConfig {
+    pub fn build(filename: &Path) -> Result<ServerConfig> {
+        let toml_string = match fs::read_to_string(filename) {
+            Ok(str) => str,
+            Err(error) => {
+                return Err(Error::ConfigReadError(error.to_string()));
+            }
+        };
 
-        let web_port_str = env::var(WEB_PORT).expect("WEB_PORT is not set");
-        let web_port: u16 = web_port_str
-            .parse()
-            .expect("WEB_PORT is not a valid number");
+        let config: ServerConfig = match toml::from_str(toml_string.as_str()) {
+            Ok(value) => value,
+            Err(error) => return Err(Error::ConfigParseError(error.to_string())),
+        };
 
-        let tunnel_port_str = env::var(TUNNEL_PORT).expect("TUNNEL_PORT is not set");
-        let tunnel_port: u16 = tunnel_port_str
-            .parse()
-            .expect("TUNNEL_PORT is not a valid number");
+        if config.webhook_path.len() == 0 {
+            return Err(Error::ConfigInvalidError(
+                "Webhook path must not be empty.".to_string(),
+            ));
+        }
 
-        Ok(Config {
-            web_port,
-            tunnel_port,
-        })
+        if !valid_webhook_path(config.webhook_path.as_str()) {
+            return Err(Error::ConfigInvalidError(
+                "Webhook path must be in this format: /foo-bar".to_string(),
+            ));
+        }
+
+        if config.jwt_secret.len() == 0 {
+            return Err(Error::ConfigInvalidError(
+                "JWT secret must no be empty.".to_string(),
+            ));
+        }
+
+        Ok(config)
     }
+}
+
+/// webhook-rs: A webhook server and client
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct AppArgs {
+    #[command(subcommand)]
+    pub command: Commands,
+
+    /// TOML configuration file
+    #[arg(short, long, value_name = "FILE.toml")]
+    pub config: PathBuf,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Runs the Webhook server
+    Server,
+
+    /// Runs the Webhook client
+    Client,
 }

@@ -9,10 +9,14 @@ use tokio::{
 use tracing::{error, info};
 
 use crate::client::TunnelClient;
+use crate::config::ServerConfig;
 use crate::Error;
-use crate::{config::Config, Result};
+use crate::Result;
 
-pub async fn start_web_server(tunnel: Arc<Mutex<TunnelClient>>, config: &Config) -> Result<()> {
+pub async fn start_web_server(
+    tunnel: Arc<Mutex<TunnelClient>>,
+    config: &ServerConfig,
+) -> Result<()> {
     let address = format!("0.0.0.0:{}", config.web_port);
     let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
