@@ -1,68 +1,92 @@
+use std::{thread, time::Duration};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
 };
 
-use crate::Result;
+use tracing::{error, info};
 
-pub struct TunnelClient {
-    stream: Option<TcpStream>,
-    verified: bool,
+use crate::{config::ClientConfig, token::create_auth_token, Result};
+
+pub async fn start_client(config: &ClientConfig) {
+    loop {
+        let conn = connect(&config).await;
+        if let Err(e) = conn {
+            error!("Connection error: {}", e);
+            info!("Reconnecting in 10 seconds...");
+
+            thread::sleep(Duration::from_secs(10));
+        }
+    }
 }
 
-impl TunnelClient {
-    pub fn new() -> Self {
-        TunnelClient {
-            stream: None,
-            verified: false,
+async fn connect(config: &ClientConfig) -> Result<()> {
+    let stream_res = TcpStream::connect(&config.tunnel_address).await;
+    match stream_res {
+        Ok(stream) => {
+            info!("Connected to server...");
+            if let Err(conn_err) = handle_connection(config, stream).await {
+                return Err(conn_err);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            let connect_err = format!("Error connecting to the server: {}", e);
+            Err(connect_err.into())
+        }
+    }
+}
+
+async fn handle_connection(config: &ClientConfig, mut stream: TcpStream) -> Result<()> {
+    let (reader, mut writer) = stream.split();
+
+    info!("Authenticating to server...");
+
+    // Before reading incoming messages, send a message to the server first
+    let token = create_auth_token(&config.jwt_secret)?;
+    let auth_msg = format!("AUTH /auth WEBHOOK/1.0\r\nAuthorization: {}\n", token);
+    let write_res = writer.write_all(auth_msg.as_bytes()).await;
+
+    if let Err(write_err) = write_res {
+        let msg = format!("Authenticating to server failed: {}", write_err);
+        return Err(msg.into());
+    }
+
+    let mut buf_reader = BufReader::new(reader);
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+
+        match buf_reader.read_line(&mut line).await {
+            Ok(0) => {
+                // Connection closed
+                break;
+            }
+            Ok(_) => {
+                // Received some message
+                let msg = line.trim();
+
+                // This check will run on all messages sent from the server
+                // like a webhook payload
+                // TODO: Fix this...
+                let _ = handle_auth_response(msg)?;
+                info!("Authentication to server successful.");
+            }
+            Err(e) => {
+                let msg = format!("Failed to read from server stream: {}", e);
+                return Err(msg.into());
+            }
         }
     }
 
-    pub fn with_stream(stream: TcpStream) -> Self {
-        Self {
-            stream: Some(stream),
-            verified: false,
-        }
-    }
+    Ok(())
+}
 
-    pub fn verify(&mut self) {
-        self.verified = true;
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.stream.is_some()
-    }
-
-    pub fn is_verified(&self) -> bool {
-        self.verified && self.is_connected()
-    }
-
-    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if let Some(stream) = self.stream.as_mut() {
-            return match stream.read(buf).await {
-                Ok(n) => Ok(n),
-                Err(e) => {
-                    let msg = format!("Read client stream failed: {}", e);
-                    Err(msg.into())
-                }
-            };
-        }
-
-        // No connection yet
-        return Err("Read client stream failed: no client connection yet.".into());
-    }
-
-    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
-        if let Some(stream) = self.stream.as_mut() {
-            return match stream.write_all(data).await {
-                Ok(_) => Ok(()),
-                Err(write_err) => {
-                    let msg = format!("Write to client stream failed: {}", write_err);
-                    Err(msg.into())
-                }
-            };
-        }
-
-        Err("Write to client stream failed: no client connection yet.".into())
+fn handle_auth_response(message: &str) -> Result<()> {
+    match message {
+        "WEBHOOK/1.0 200 OK" => Ok(()),
+        "WEBHOOK/1.0 401 Unauthorized" => Err("Authentication failed".into()),
+        _ => Ok(()),
     }
 }
