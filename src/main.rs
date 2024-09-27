@@ -10,7 +10,7 @@ mod utils;
 mod web;
 
 use client::TunnelClient;
-use config::{AppArgs, Commands, ServerConfig, RUST_LOG};
+use config::{AppArgs, ClientConfig, Commands, ServerConfig, RUST_LOG};
 
 // Re-exports
 pub use error::{Error, Result};
@@ -42,12 +42,12 @@ async fn main() {
 
 async fn run_command(args: AppArgs) -> Result<()> {
     match args.command {
-        Commands::Server => run_server(args).await,
-        Commands::Client => run_client().await,
+        Commands::Server => run_server(&args).await,
+        Commands::Client => run_client(&args).await,
     }
 }
 
-async fn run_server(args: AppArgs) -> Result<()> {
+async fn run_server(args: &AppArgs) -> Result<()> {
     let config = ServerConfig::build(args.config.as_path())?;
     let client = Arc::new(Mutex::new(TunnelClient::new()));
 
@@ -64,6 +64,8 @@ async fn run_server(args: AppArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_client() -> Result<()> {
+async fn run_client(args: &AppArgs) -> Result<()> {
+    let config = ClientConfig::build(args.config.as_path())?;
+
     Ok(())
 }
