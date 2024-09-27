@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Mutex,
 };
@@ -41,26 +41,9 @@ impl TunnelClient {
         self.verified && self.is_connected()
     }
 
-    pub async fn read(&mut self, buf: &mut String) -> Result<usize> {
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         if let Some(stream) = self.stream.as_mut() {
-            let mut reader = BufReader::new(stream);
-            return match reader.read_line(buf).await {
-                Ok(n) => Ok(n),
-                Err(e) => {
-                    let msg = format!("Read client stream failed: {}", e);
-                    Err(msg.into())
-                }
-            };
-        }
-
-        // No connection yet
-        return Err("Read client stream failed: no client connection yet.".into());
-    }
-
-    pub async fn read_line(&mut self, buf: &mut String) -> Result<usize> {
-        if let Some(stream) = self.stream.as_mut() {
-            let mut reader = BufReader::new(stream);
-            return match reader.read_line(buf).await {
+            return match stream.read(buf).await {
                 Ok(n) => Ok(n),
                 Err(e) => {
                     let msg = format!("Read client stream failed: {}", e);
@@ -132,17 +115,18 @@ async fn handle_client(tunnel: Arc<Mutex<TunnelClient>>, stream: TcpStream) -> R
     let mut client = tunnel.lock().await;
 
     // This should be enough to verify auth requests
-    let mut buffer = String::new();
-    match client.read_line(&mut buffer).await {
+    let mut buffer = [0; 4096];
+    match client.read(&mut buffer).await {
         Ok(0) => {
             // Connection closed
             info!("Connection from client closed.");
             return Ok(());
         }
-        Ok(_) => {
-            let message = buffer.trim();
+        Ok(n) => {
+            let message = String::from_utf8_lossy(&buffer[..n]).to_string();
             info!(message);
-            if valid_auth(message) {
+
+            if valid_auth(message.as_str()) {
                 // Send response to client
                 if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\n").await {
                     error!("Sending OK reply failed: {}", reply_err);
