@@ -50,12 +50,14 @@ async fn run_command(args: AppArgs) -> Result<()> {
 
 async fn run_server(args: &AppArgs) -> Result<()> {
     let config = ServerConfig::build(args.config.as_path())?;
+    let arc_config = Arc::new(config);
     let client = Arc::new(Mutex::new(TunnelClient::new()));
 
     let res = tokio::try_join!(
-        start_tunnel_server(client.clone(), &config),
-        start_web_server(client.clone(), &config)
+        start_tunnel_server(client.clone(), arc_config.clone()),
+        start_web_server(client.clone(), arc_config.clone())
     );
+
     if let Err(e) = res {
         let msg = format!("Error starting servers: {e}");
         error!("{}", msg);

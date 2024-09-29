@@ -1,3 +1,9 @@
+use axum::extract::{FromRef, State};
+use axum::http::Method;
+use axum::response::Response;
+use axum::routing::get;
+use axum::Router;
+use axum::{body::Body, http::HeaderMap};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -5,114 +11,118 @@ use tokio::{
     io::BufReader,
     net::{TcpListener, TcpStream},
 };
-
-use tracing::{error, info};
+use tower::ServiceBuilder;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::{error, info, Level};
 
 use crate::config::ServerConfig;
 use crate::tunnel::TunnelClient;
 use crate::Error;
 use crate::Result;
 
+#[derive(Clone, FromRef)]
+pub struct AppState {
+    tunnel: Arc<Mutex<TunnelClient>>,
+    config: Arc<ServerConfig>,
+}
+
 pub async fn start_web_server(
     tunnel: Arc<Mutex<TunnelClient>>,
-    config: &ServerConfig,
+    config: Arc<ServerConfig>,
 ) -> Result<()> {
-    let address = format!("0.0.0.0:{}", config.web_port);
-    let listener = TcpListener::bind(address.as_str()).await.unwrap();
+    let arc_tunnel = tunnel.clone();
+    let arc_config = config.clone();
+    let web_address = arc_config.web_address.clone();
+    let webhook_path = arc_config.webhook_path.clone();
 
-    info!("Webhook web server started at {}", address);
+    let state = AppState {
+        tunnel: arc_tunnel,
+        config: arc_config,
+    };
 
-    loop {
-        let tunnel_copy = tunnel.clone();
-        let conn = listener.accept().await;
-        match conn {
-            Ok((stream, _)) => {
-                tokio::spawn(async move {
-                    handle_connection(tunnel_copy, stream).await;
-                });
-            }
-            Err(e) => {
-                info!("Error accepting connection: {:?}", e);
-                break;
-            }
-        }
-    }
+    let routes = Router::new()
+        .route("/", get(index_handler))
+        .route(
+            webhook_path.as_str(),
+            get(webhook_handler)
+                .post(webhook_handler)
+                .put(webhook_handler)
+                .patch(webhook_handler),
+        )
+        .fallback(fallback_handler)
+        .with_state(state)
+        .layer(
+            ServiceBuilder::new().layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                    .on_response(DefaultOnResponse::new().level(Level::INFO)),
+            ),
+        );
+
+    // Setup the server
+    info!("HTTP server started at {}", web_address);
+
+    let listener = TcpListener::bind(web_address).await.unwrap();
+    axum::serve(listener, routes.into_make_service())
+        .await
+        .unwrap();
 
     Ok(())
 }
 
-async fn handle_connection(tunnel: Arc<Mutex<TunnelClient>>, mut stream: TcpStream) {
-    let reader = BufReader::new(&mut stream);
-    let request_line = reader.lines().next_line().await.unwrap().unwrap();
-
-    info!("{}", request_line);
-
-    let (status_line, contents) = match request_line.as_str() {
-        "GET / HTTP/1.1" => ("HTTP/1.1 200 OK", "OK"),
-        "GET /webhook HTTP/1.1" => ("HTTP/1.1 200 OK", "OK"),
-        "POST /webhook HTTP/1.1" => ("HTTP/1.1 200 OK", "OK"),
-        _ => ("HTTP/1.1 404 NOT FOUND", "Not Found"),
-    };
-
-    if contents == "OK" {
-        if let Err(f_err) = forward_request(tunnel, stream).await {
-            error!("Forward request failed: {}", f_err);
-        }
-    } else {
-        let length = contents.len();
-
-        let response = format!(
-            "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-            status_line, "text/plain; charset=UTF-8", length, contents
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-    }
+async fn index_handler() -> Response<Body> {
+    let content = Body::from("OK");
+    let content_type = "text/plain; charset=UTF8";
+    Response::builder()
+        .header("Content-Type", content_type)
+        .status(200)
+        .body(content)
+        .unwrap()
 }
 
-async fn forward_request(tunnel: Arc<Mutex<TunnelClient>>, stream: TcpStream) -> Result<()> {
-    let mut client = tunnel.lock().await;
+async fn fallback_handler() -> Response<Body> {
+    let content = Body::from("NOT FOUND");
+    let content_type = "text/plain; charset=UTF8";
+    Response::builder()
+        .header("Content-Type", content_type)
+        .status(404)
+        .body(content)
+        .unwrap()
+}
 
-    // Do not send down requests if client is not yet authenticated
+async fn webhook_handler(
+    state: State<AppState>,
+    headers: HeaderMap,
+    method: Method,
+    body: Body,
+) -> Response<Body> {
+    let mut client = state.tunnel.lock().await;
     if client.is_verified() {
         if let Err(write_err) = client.write(b"YOU GOT MAIL\n").await {
-            return forward_error(stream, Some(write_err)).await;
+            return handle_forward_error(Some(write_err));
         } else {
-            return forward_success(stream).await;
+            return handle_forward_success();
         }
-    } else {
-        return forward_error(stream, None).await;
     }
+
+    handle_forward_error(None)
 }
 
-async fn forward_success(mut stream: TcpStream) -> Result<()> {
-    let status_line = "HTTP/1.1 200 OK";
-    let contents = "OK";
-    let length = contents.len();
-
-    let response = format!(
-        "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-        status_line, "text/plain; charset=UTF-8", length, contents
-    );
-
-    stream.write_all(response.as_bytes()).await.unwrap();
-    return Ok(());
+fn handle_forward_success() -> Response<Body> {
+    Response::builder()
+        .status(200)
+        .body(Body::from("OK"))
+        .unwrap()
 }
 
-async fn forward_error(mut stream: TcpStream, error: Option<Error>) -> Result<()> {
-    let status_line = "HTTP/1.1 503 Service Unavailable";
+fn handle_forward_error(error: Option<Error>) -> Response<Body> {
     let write_err: String = match error {
         Some(err) => format!(": {}", err),
         None => "".to_string(),
     };
     let contents = format!("Service Unavailable{}\n", write_err);
-    let length = contents.len();
-
-    let response = format!(
-        "{}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-        status_line, "text/plain; charset=UTF-8", length, contents
-    );
-
-    stream.write_all(response.as_bytes()).await.unwrap();
-
-    Ok(())
+    Response::builder()
+        .status(503)
+        .body(Body::from(contents))
+        .unwrap()
 }

@@ -12,7 +12,7 @@ pub const RUST_LOG: &str = "RUST_LOG";
 
 #[derive(Clone, Deserialize)]
 pub struct ServerConfig {
-    pub web_port: u16,
+    pub web_address: String,
     pub tunnel_port: u16,
     pub webhook_path: String,
     pub jwt_secret: String,

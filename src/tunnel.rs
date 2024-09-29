@@ -73,16 +73,18 @@ impl TunnelClient {
 
 pub async fn start_tunnel_server(
     tunnel: Arc<Mutex<TunnelClient>>,
-    config: &ServerConfig,
+    config: Arc<ServerConfig>,
 ) -> Result<()> {
-    let address = format!("0.0.0.0:{}", config.tunnel_port);
+    let arc_config = config.clone();
+
+    let address = format!("0.0.0.0:{}", arc_config.tunnel_port);
     let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
     info!("Webhook tunnel server started at {}", address);
 
     loop {
         let tunnel_copy = tunnel.clone();
-        let config_copy = config.clone();
+        let config_copy = arc_config.clone();
 
         // We only allow one client at a time, so whenever we have a new connection,
         // we just override the previous one.
@@ -106,7 +108,7 @@ pub async fn start_tunnel_server(
 }
 
 async fn handle_client(
-    config: ServerConfig,
+    config: Arc<ServerConfig>,
     tunnel: Arc<Mutex<TunnelClient>>,
     stream: TcpStream,
 ) -> Result<()> {

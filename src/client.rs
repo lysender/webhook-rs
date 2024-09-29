@@ -66,6 +66,7 @@ async fn handle_connection(config: &ClientConfig, mut stream: TcpStream) -> Resu
             Ok(_) => {
                 // Received some message
                 let msg = line.trim();
+                println!("{}", msg);
 
                 // This check will run on all messages sent from the server
                 // like a webhook payload
