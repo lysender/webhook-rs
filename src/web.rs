@@ -126,11 +126,10 @@ async fn webhook_handler(
         let with_body = vec!["POST", "PUT", "PATCH"];
         if with_body.contains(&method.as_str()) {
             // Add separator for the body
-            request_bytes.extend_from_slice("\r\n\r\n".as_bytes());
+            request_bytes.extend_from_slice("\r\n".as_bytes());
 
             let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
             request_bytes.extend_from_slice(&body_bytes);
-            request_bytes.extend_from_slice("\r\n".as_bytes());
         }
 
         if let Err(write_err) = client.write(&request_bytes).await {

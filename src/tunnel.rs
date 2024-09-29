@@ -134,7 +134,7 @@ async fn handle_client(
 
             if valid_auth(message.as_str(), &config.jwt_secret).is_ok() {
                 // Send response to client
-                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\n").await {
+                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\r\n").await {
                     error!("Sending OK reply failed: {}", reply_err);
                     return Ok(());
                 } else {
@@ -145,7 +145,7 @@ async fn handle_client(
                 info!("Client authentication failed.");
 
                 // Send auth failed error to client
-                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 401 Unauthorized\n").await {
+                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 401 Unauthorized\r\n").await {
                     error!("Sending Unauthorized reply failed: {}", reply_err);
                     return Ok(());
                 }
