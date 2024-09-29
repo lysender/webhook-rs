@@ -2,7 +2,7 @@ use reqwest::Client;
 use reqwest::Method as ReqwestMethod;
 use std::{thread, time::Duration};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 
@@ -59,6 +59,7 @@ async fn handle_connection(
     }
 
     // Try to read messages with a large buffer first, let's see what happens
+    // TODO: Handle when data won't fit in the buffer
     let mut buffer = [0; 4096];
     loop {
         match stream.read(&mut buffer).await {
@@ -70,7 +71,6 @@ async fn handle_connection(
             Ok(n) => {
                 // We got filled, let's read it
                 let message = String::from_utf8_lossy(&buffer[..n]).to_string();
-                println!(">>>{}<<<", message);
 
                 let handled_res =
                     handle_server_response(crawler.clone(), config, message.as_str()).await?;
@@ -100,9 +100,6 @@ async fn handle_server_response(
     if let Some(first_pos) = message.find("\r\n") {
         let (request_line, remaining) = message.split_at(first_pos);
 
-        println!("Req line: {}", request_line);
-        println!("Remaining: {}", remaining);
-
         match request_line {
             "WEBHOOK/1.0 200 OK" => {
                 info!("Authentication to server successful.");
@@ -113,8 +110,6 @@ async fn handle_server_response(
                 return Err("Authentication to server failed.".into());
             }
             "FORWARD /webhook WEBHOOK/1.0" => {
-                info!("Forward request received...");
-
                 // Do the forwarding here...
                 // Strip the next empty line then forward the rest
                 let remaining_data = &remaining[4..];
@@ -139,6 +134,8 @@ async fn forward_request(crawler: Client, config: &ClientConfig, message: &str) 
     let mut rn_lines = message.split("\r\n");
 
     let request_line = rn_lines.next().unwrap();
+    info!("Forwarding request: {}", request_line);
+
     // Figure out the method
     let mut rl_parts = request_line.split_whitespace();
     let method = rl_parts.next().unwrap();
