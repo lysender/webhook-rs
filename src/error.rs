@@ -1,5 +1,4 @@
 use derive_more::From;
-use serde::Deserialize;
 
 pub type Result<T> = core::result::Result<T, Error>;
 
@@ -17,13 +16,6 @@ pub enum Error {
     ConfigReadError(String),
     ConfigParseError(String),
     ConfigInvalidError(String),
-}
-
-#[derive(Deserialize)]
-pub struct ErrorResponse {
-    pub status_code: u16,
-    pub message: String,
-    pub error: String,
 }
 
 /// Allow string slices to be converted to Error

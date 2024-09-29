@@ -73,16 +73,18 @@ impl TunnelClient {
 
 pub async fn start_tunnel_server(
     tunnel: Arc<Mutex<TunnelClient>>,
-    config: &ServerConfig,
+    config: Arc<ServerConfig>,
 ) -> Result<()> {
-    let address = format!("0.0.0.0:{}", config.tunnel_port);
+    let arc_config = config.clone();
+
+    let address = format!("0.0.0.0:{}", arc_config.tunnel_port);
     let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
     info!("Webhook tunnel server started at {}", address);
 
     loop {
         let tunnel_copy = tunnel.clone();
-        let config_copy = config.clone();
+        let config_copy = arc_config.clone();
 
         // We only allow one client at a time, so whenever we have a new connection,
         // we just override the previous one.
@@ -106,7 +108,7 @@ pub async fn start_tunnel_server(
 }
 
 async fn handle_client(
-    config: ServerConfig,
+    config: Arc<ServerConfig>,
     tunnel: Arc<Mutex<TunnelClient>>,
     stream: TcpStream,
 ) -> Result<()> {
@@ -132,7 +134,7 @@ async fn handle_client(
 
             if valid_auth(message.as_str(), &config.jwt_secret).is_ok() {
                 // Send response to client
-                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\n").await {
+                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\r\n").await {
                     error!("Sending OK reply failed: {}", reply_err);
                     return Ok(());
                 } else {
@@ -143,7 +145,7 @@ async fn handle_client(
                 info!("Client authentication failed.");
 
                 // Send auth failed error to client
-                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 401 Unauthorized\n").await {
+                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 401 Unauthorized\r\n").await {
                     error!("Sending Unauthorized reply failed: {}", reply_err);
                     return Ok(());
                 }

@@ -4,7 +4,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use url::Url;
 
 use crate::{utils::valid_webhook_path, Error, Result};
 
@@ -12,7 +11,7 @@ pub const RUST_LOG: &str = "RUST_LOG";
 
 #[derive(Clone, Deserialize)]
 pub struct ServerConfig {
-    pub web_port: u16,
+    pub web_address: String,
     pub tunnel_port: u16,
     pub webhook_path: String,
     pub jwt_secret: String,
@@ -21,7 +20,8 @@ pub struct ServerConfig {
 #[derive(Clone, Deserialize)]
 pub struct ClientConfig {
     pub tunnel_address: String,
-    pub target_url: String,
+    pub target_host: String,
+    pub target_port: u16,
     pub jwt_secret: String,
 }
 
@@ -81,15 +81,9 @@ impl ClientConfig {
             ));
         }
 
-        if config.target_url.len() == 0 {
+        if config.target_host.len() == 0 {
             return Err(Error::ConfigInvalidError(
-                "Target application URL must not be empty.".to_string(),
-            ));
-        }
-
-        if let Err(_) = Url::parse(config.target_url.as_str()) {
-            return Err(Error::ConfigInvalidError(
-                "Target application URL must be a valid URL.".to_string(),
+                "Target application host must not be empty.".to_string(),
             ));
         }
 
