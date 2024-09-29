@@ -1,4 +1,5 @@
-use axum::extract::{FromRef, State};
+use axum::body::to_bytes;
+use axum::extract::{FromRef, Request, State};
 use axum::http::Method;
 use axum::response::Response;
 use axum::routing::get;
@@ -92,13 +93,48 @@ async fn fallback_handler() -> Response<Body> {
 
 async fn webhook_handler(
     state: State<AppState>,
-    headers: HeaderMap,
-    method: Method,
-    body: Body,
+    request: Request,
+    //headers: HeaderMap,
+    //method: Method,
+    //body: Body,
 ) -> Response<Body> {
     let mut client = state.tunnel.lock().await;
     if client.is_verified() {
-        if let Err(write_err) = client.write(b"YOU GOT MAIL\n").await {
+        // How do we send the original request to the connected client?
+        // FORWARD /webhook WEBHOOK/1.0
+        // \r\n
+        // \r\n
+        // -- Original request here as bytes?
+        // Something like that?
+        // Then maybe we encode the whoe request line plus body as base64 encoded data?
+        // Or maybe just end it raw?
+        let request_line = format!("{} {} HTTP/1.1", request.method(), request.uri());
+
+        println!("{}", request_line);
+
+        // Let's build the data to send to connected client
+        let mut tunnel_headers: Vec<String> = vec![
+            "FORWARD /webhook WEBHOOK/1.0".to_string(),
+            "".to_string(),
+            request_line,
+        ];
+
+        for (key, value) in request.headers().iter() {
+            tunnel_headers.push(format!("{}: {}", key, value.to_str().unwrap()));
+        }
+
+        let tunnel_data_str = tunnel_headers.join("\r\n");
+        println!("{}", tunnel_data_str);
+
+        let mut request_bytes: Vec<u8> = Vec::new();
+        request_bytes.extend_from_slice(tunnel_data_str.as_bytes());
+        request_bytes.extend_from_slice("\r\n\r\n".as_bytes());
+
+        let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+        request_bytes.extend_from_slice(&body_bytes);
+        request_bytes.extend_from_slice("\r\n".as_bytes());
+
+        if let Err(write_err) = client.write(&request_bytes).await {
             return handle_forward_error(Some(write_err));
         } else {
             return handle_forward_success();
