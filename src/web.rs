@@ -108,31 +108,30 @@ async fn webhook_handler(
         // Something like that?
         // Then maybe we encode the whoe request line plus body as base64 encoded data?
         // Or maybe just end it raw?
-        let request_line = format!("{} {} HTTP/1.1", request.method(), request.uri());
-
-        println!("{}", request_line);
-
-        // Let's build the data to send to connected client
-        let mut tunnel_headers: Vec<String> = vec![
-            "FORWARD /webhook WEBHOOK/1.0".to_string(),
-            "".to_string(),
-            request_line,
-        ];
-
-        for (key, value) in request.headers().iter() {
-            tunnel_headers.push(format!("{}: {}", key, value.to_str().unwrap()));
-        }
-
-        let tunnel_data_str = tunnel_headers.join("\r\n");
-        println!("{}", tunnel_data_str);
+        let method = request.method().to_string();
 
         let mut request_bytes: Vec<u8> = Vec::new();
-        request_bytes.extend_from_slice(tunnel_data_str.as_bytes());
-        request_bytes.extend_from_slice("\r\n\r\n".as_bytes());
+        // Webhook header and a separator
+        request_bytes.extend_from_slice("FORWARD /webhook WEBHOOK/1.0\r\n\r\n".as_bytes());
 
-        let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
-        request_bytes.extend_from_slice(&body_bytes);
-        request_bytes.extend_from_slice("\r\n".as_bytes());
+        // Build original request
+        let request_line = format!("{} {} HTTP/1.1\r\n", &method, request.uri());
+        request_bytes.extend_from_slice(&request_line.as_bytes());
+
+        for (key, value) in request.headers().iter() {
+            let header_line = format!("{}: {}\r\n", key, value.to_str().unwrap());
+            request_bytes.extend_from_slice(&header_line.as_bytes());
+        }
+
+        let with_body = vec!["POST", "PUT", "PATCH"];
+        if with_body.contains(&method.as_str()) {
+            // Add separator for the body
+            request_bytes.extend_from_slice("\r\n\r\n".as_bytes());
+
+            let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+            request_bytes.extend_from_slice(&body_bytes);
+            request_bytes.extend_from_slice("\r\n".as_bytes());
+        }
 
         if let Err(write_err) = client.write(&request_bytes).await {
             return handle_forward_error(Some(write_err));
