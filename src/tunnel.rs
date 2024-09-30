@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Mutex,
+    time::timeout,
 };
 use tracing::{error, info};
 
@@ -69,6 +70,24 @@ impl TunnelClient {
 
         Err("Write to client stream failed: no client connection yet.".into())
     }
+
+    pub async fn close(&mut self) -> Result<()> {
+        info!("Closing TCP connection from client.");
+
+        if let Some(stream) = self.stream.as_mut() {
+            if let Err(shutdown_err) = stream.shutdown().await {
+                // We really need to close the stream so we let the error pass
+                let msg = format!("Failed to shutdown client stream: {}", shutdown_err);
+                error!(msg);
+                self.stream = None;
+
+                return Err(msg.into());
+            }
+        }
+
+        self.stream = None;
+        Ok(())
+    }
 }
 
 pub async fn start_tunnel_server(
@@ -119,45 +138,64 @@ async fn handle_client(
     }
 
     // Wait for client to authenticate
+    match timeout(Duration::from_secs(10), handle_auth(config, tunnel.clone())).await {
+        Ok(res) => match res {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("Client authentication failed: {}", e);
+                error!("{}", msg);
+                let mut client = tunnel.lock().await;
+                let _ = client.close().await;
+                Err(msg.into())
+            }
+        },
+        Err(_) => {
+            let msg = "Client connection timeout";
+            error!("{}", msg);
+            let mut client = tunnel.lock().await;
+            let _ = client.close().await;
+            Err(msg.into())
+        }
+    }
+}
+
+async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
     let mut client = tunnel.lock().await;
 
     // This should be enough to verify auth requests
     let mut buffer = [0; 4096];
     match client.read(&mut buffer).await {
-        Ok(0) => {
-            // Connection closed
-            info!("Connection from client closed.");
-            return Ok(());
-        }
+        Ok(0) => Err("Connection from client closed.".into()),
         Ok(n) => {
             let message = String::from_utf8_lossy(&buffer[..n]).to_string();
 
             if valid_auth(message.as_str(), &config.jwt_secret).is_ok() {
                 // Send response to client
                 if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\r\n").await {
-                    error!("Sending OK reply failed: {}", reply_err);
-                    return Ok(());
-                } else {
-                    info!("Client authenticated successfully.");
-                    client.verify();
+                    let msg = format!("Sending OK reply failed: {}", reply_err);
+                    return Err(msg.into());
                 }
+
+                info!("Client authenticated successfully.");
+                client.verify();
+                return Ok(());
             } else {
-                info!("Client authentication failed.");
+                error!("Invalid authorization code.");
 
                 // Send auth failed error to client
                 if let Err(reply_err) = client.write(b"WEBHOOK/1.0 401 Unauthorized\r\n").await {
-                    error!("Sending Unauthorized reply failed: {}", reply_err);
-                    return Ok(());
+                    let msg = format!("Sending Unauthorized reply failed: {}", reply_err);
+                    return Err(msg.into());
                 }
+
+                return Err("Invalid authorization code.".into());
             }
         }
         Err(e) => {
-            error!("Failed to read from client stream: {}", e);
-            return Ok(());
+            let msg = format!("Failed to read from client stream: {}", e);
+            Err(msg.into())
         }
     }
-
-    Ok(())
 }
 
 fn valid_auth(message: &str, secret: &str) -> Result<()> {
