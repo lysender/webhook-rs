@@ -67,22 +67,16 @@ pub async fn start_web_server(
 }
 
 async fn index_handler() -> Response<Body> {
-    let content = Body::from("OK");
-    let content_type = "text/plain; charset=UTF8";
     Response::builder()
-        .header("Content-Type", content_type)
         .status(200)
-        .body(content)
+        .body(Body::from("OK"))
         .unwrap()
 }
 
 async fn fallback_handler() -> Response<Body> {
-    let content = Body::from("NOT FOUND");
-    let content_type = "text/plain; charset=UTF8";
     Response::builder()
-        .header("Content-Type", content_type)
         .status(404)
-        .body(content)
+        .body(Body::from("NOT FOUND"))
         .unwrap()
 }
 
