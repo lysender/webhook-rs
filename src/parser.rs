@@ -19,6 +19,14 @@ pub struct RequestLine {
 }
 
 impl RequestLine {
+    pub fn new(method: String, path: String, version: String) -> Self {
+        Self {
+            method,
+            path,
+            version,
+        }
+    }
+
     pub fn parse(line: &str) -> Result<Self> {
         let mut parts = line.split_whitespace();
         let Some(method) = parts.next() else {
@@ -54,6 +62,14 @@ pub struct ResponseLine {
 }
 
 impl ResponseLine {
+    pub fn new(version: String, status_code: u16, message: Option<String>) -> Self {
+        Self {
+            version,
+            status_code,
+            message,
+        }
+    }
+
     pub fn parse(line: &str) -> Result<Self> {
         let mut parts = line.split_whitespace();
         let Some(version) = parts.next() else {
@@ -88,6 +104,193 @@ impl ResponseLine {
 }
 
 #[derive(Debug)]
+pub enum StatusLine {
+    TunnelRequest(RequestLine),
+    TunnelResponse(ResponseLine),
+    HttpRequest(RequestLine),
+    HttpResponse(ResponseLine),
+}
+
+impl StatusLine {
+    pub fn into_bytes(&self) -> Vec<u8> {
+        match self {
+            StatusLine::TunnelRequest(line) => line.into_bytes(),
+            StatusLine::TunnelResponse(line) => line.into_bytes(),
+            StatusLine::HttpRequest(line) => line.into_bytes(),
+            StatusLine::HttpResponse(line) => line.into_bytes(),
+        }
+    }
+}
+
+fn parse_status_line(line: &str) -> Result<StatusLine> {
+    let mut parts = line.split_whitespace();
+
+    let Some(first) = parts.next() else {
+        return Err(Error::TunnelStatusLineInvalid);
+    };
+
+    match first {
+        "AUTH" | "FORWARD" => {
+            // This is a tunnel request
+            let st = RequestLine::parse(line)?;
+            Ok(StatusLine::TunnelRequest(st))
+        }
+        "WEBHOOK/1.0" => {
+            // This is a tunnel response
+            let st = ResponseLine::parse(line)?;
+            Ok(StatusLine::TunnelResponse(st))
+        }
+        "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {
+            // This is a HTTP request
+            let st = RequestLine::parse(line)?;
+            Ok(StatusLine::HttpRequest(st))
+        }
+        "HTTP/1.1" | "HTTP/1.0" => {
+            // This is a HTTP response
+            // We don't support HTTP/2 yet, probably never
+            let st = ResponseLine::parse(line)?;
+            Ok(StatusLine::HttpResponse(st))
+        }
+        _ => Err(Error::TunnelStatusLineInvalid),
+    }
+}
+
+#[derive(Debug)]
+pub struct TunnelMessage {
+    pub status_line: StatusLine,
+    pub headers: Vec<HeaderItem>,
+    pub initial_body: Vec<u8>,
+}
+
+impl TunnelMessage {
+    pub fn new(status_line: StatusLine) -> Self {
+        Self {
+            status_line,
+            headers: Vec::new(),
+            initial_body: Vec::new(),
+        }
+    }
+
+    pub fn with_tunnel_auth(token: String) -> Self {
+        let st = StatusLine::TunnelRequest(RequestLine::new(
+            "AUTH".to_string(),
+            "/auth".to_string(),
+            "WEBHOOK/1.0".to_string(),
+        ));
+
+        let mut req = Self::new(st);
+        req.headers.push(("Authorization".to_string(), token));
+        req
+    }
+
+    pub fn from_buffer(buffer: &[u8]) -> Result<Self> {
+        // Read the request line
+        let Some(req_bufline) = read_buffer_line(buffer, 0) else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+
+        // Do not parse the first line yet, assume it is valid
+        let status_line = parse_status_line(req_bufline.line.as_str())?;
+
+        let mut headers: Vec<HeaderItem> = Vec::new();
+        let mut body_start: Option<usize> = None;
+
+        // Message headers next
+        if let Some(start) = req_bufline.next_start {
+            let mut next_start = start;
+
+            // Parse the remaining of the buffer for headers and possibly body
+            while let Some(bufline) = read_buffer_line(buffer, next_start) {
+                if bufline.line.is_empty() {
+                    // End of headers
+                    // See if we have a body
+                    if let Some(b_start) = bufline.next_start {
+                        body_start = Some(b_start);
+                    }
+                    break;
+                }
+
+                let parts: Vec<&str> = bufline.line.split(":").collect();
+                if parts.len() != 2 {
+                    return Err(Error::RequestHeaderInvalid);
+                }
+
+                // Simplify headers by forcing it be lowercase
+                headers.push((parts[0].to_lowercase(), parts[1].trim().to_string()));
+
+                match bufline.next_start {
+                    Some(next) => {
+                        next_start = next;
+                    }
+                    None => {
+                        // No more headers
+                        break;
+                    }
+                };
+            }
+        }
+
+        let mut initial_body: Vec<u8> = Vec::new();
+        if let Some(b_start) = body_start {
+            // Consume the rest of the content as body
+            initial_body.extend_from_slice(&buffer[b_start..]);
+        }
+
+        Ok(Self {
+            status_line,
+            headers,
+            initial_body,
+        })
+    }
+
+    pub fn is_tunnel_auth(&self) -> bool {
+        match &self.status_line {
+            StatusLine::TunnelRequest(line) => {
+                line.method.as_str() == "AUTH"
+                    && line.path.as_str() == "/auth"
+                    && line.version.as_str() == "WEBHOOK/1.0"
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_tunnel_request(&self) -> bool {
+        match &self.status_line {
+            StatusLine::TunnelRequest(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_tunnel_response(&self) -> bool {
+        match &self.status_line {
+            StatusLine::TunnelResponse(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn into_bytes(&self) -> Vec<u8> {
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // Request line
+        buffer.extend_from_slice(&self.status_line.into_bytes());
+
+        // Headers
+        for (k, v) in self.headers.iter() {
+            let header_line = format!("{}: {}\r\n", k, v);
+            buffer.extend_from_slice(&header_line.as_bytes());
+        }
+
+        // If there is a body, insert a blank line
+        if self.initial_body.len() > 0 {
+            buffer.extend_from_slice(b"\r\n");
+            buffer.extend_from_slice(&self.initial_body);
+        }
+
+        buffer
+    }
+}
+
+#[derive(Debug)]
 pub struct TunnelRequest {
     pub request_line: RequestLine,
     pub headers: Vec<HeaderItem>,
@@ -95,6 +298,28 @@ pub struct TunnelRequest {
 }
 
 impl TunnelRequest {
+    pub fn new(method: String, path: String, version: String) -> Self {
+        Self {
+            request_line: RequestLine {
+                method,
+                path,
+                version,
+            },
+            headers: Vec::new(),
+            initial_body: Vec::new(),
+        }
+    }
+
+    pub fn with_auth(token: String) -> Self {
+        let mut req = Self::new(
+            "AUTH".to_string(),
+            "/auth".to_string(),
+            "WEBHOOK/1.0".to_string(),
+        );
+        req.headers.push(("Authorization".to_string(), token));
+        req
+    }
+
     pub fn from_buffer(buffer: &[u8]) -> Result<Self> {
         // Read the request line
         let Some(req_bufline) = read_buffer_line(buffer, 0) else {
@@ -159,6 +384,27 @@ impl TunnelRequest {
         self.request_line.method.as_str() == "AUTH"
             && self.request_line.path.as_str() == "/auth"
             && self.request_line.version.as_str() == "WEBHOOK/1.0"
+    }
+
+    pub fn into_bytes(&self) -> Vec<u8> {
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // Request line
+        buffer.extend_from_slice(&self.request_line.into_bytes());
+
+        // Headers
+        for (k, v) in self.headers.iter() {
+            let header_line = format!("{}: {}\r\n", k, v);
+            buffer.extend_from_slice(&header_line.as_bytes());
+        }
+
+        // If there is a body, insert a blank line
+        if self.initial_body.len() > 0 {
+            buffer.extend_from_slice(b"\r\n");
+            buffer.extend_from_slice(&self.initial_body);
+        }
+
+        buffer
     }
 }
 
@@ -292,14 +538,21 @@ mod tests {
         );
 
         let buffer_bytes = buffer.as_bytes();
-        let res = TunnelRequest::from_buffer(buffer_bytes);
+        let res = TunnelMessage::from_buffer(buffer_bytes);
         assert!(res.is_ok());
 
-        let req = res.expect("TunnelRequest must be created");
+        let req = res.expect("TunnelMessage must be created");
 
-        assert_eq!(req.request_line.method.as_str(), "AUTH");
-        assert_eq!(req.request_line.path.as_str(), "/auth");
-        assert_eq!(req.request_line.version.as_str(), "WEBHOOK/1.0");
+        assert!(req.is_tunnel_request());
+
+        match &req.status_line {
+            StatusLine::TunnelRequest(line) => {
+                assert_eq!(line.method.as_str(), "AUTH");
+                assert_eq!(line.path.as_str(), "/auth");
+                assert_eq!(line.version.as_str(), "WEBHOOK/1.0");
+            }
+            _ => panic!("Invalid status line"),
+        }
 
         assert_eq!(req.headers.len(), 3);
 
@@ -336,14 +589,19 @@ mod tests {
         );
 
         let buffer_bytes = buffer.as_bytes();
-        let res = TunnelRequest::from_buffer(buffer_bytes);
+        let res = TunnelMessage::from_buffer(buffer_bytes);
         assert!(res.is_ok());
 
-        let req = res.expect("TunnelRequest must be created");
+        let req = res.expect("TunnelMessage must be created");
 
-        assert_eq!(req.request_line.method.as_str(), "FORWARD");
-        assert_eq!(req.request_line.path.as_str(), "/webhook");
-        assert_eq!(req.request_line.version.as_str(), "WEBHOOK/1.0");
+        match &req.status_line {
+            StatusLine::TunnelRequest(line) => {
+                assert_eq!(line.method.as_str(), "FORWARD");
+                assert_eq!(line.path.as_str(), "/webhook");
+                assert_eq!(line.version.as_str(), "WEBHOOK/1.0");
+            }
+            _ => panic!("Invalid status line"),
+        }
 
         assert_eq!(req.headers.len(), 3);
 
@@ -377,14 +635,19 @@ mod tests {
         );
 
         let buffer_bytes = buffer.as_bytes();
-        let res = TunnelRequest::from_buffer(buffer_bytes);
+        let res = TunnelMessage::from_buffer(buffer_bytes);
         assert!(res.is_ok());
 
-        let req = res.expect("TunnelRequest must be created");
+        let req = res.expect("TunnelMessage must be created");
 
-        assert_eq!(req.request_line.method.as_str(), "POST");
-        assert_eq!(req.request_line.path.as_str(), "/webhook");
-        assert_eq!(req.request_line.version.as_str(), "HTTP/1.1");
+        match &req.status_line {
+            StatusLine::HttpRequest(line) => {
+                assert_eq!(line.method.as_str(), "POST");
+                assert_eq!(line.path.as_str(), "/webhook");
+                assert_eq!(line.version.as_str(), "HTTP/1.1");
+            }
+            _ => panic!("Invalid status line"),
+        }
 
         assert_eq!(req.headers.len(), 2);
 
@@ -416,14 +679,19 @@ mod tests {
         );
 
         let buffer_bytes = buffer.as_bytes();
-        let res = TunnelResponse::from_buffer(buffer_bytes);
+        let res = TunnelMessage::from_buffer(buffer_bytes);
         assert!(res.is_ok());
 
-        let res = res.expect("TunnelResponse must be created");
+        let res = res.expect("TunnelMessage must be created");
 
-        assert_eq!(res.response_line.version.as_str(), "WEBHOOK/1.0");
-        assert_eq!(res.response_line.status_code, 200);
-        assert_eq!(res.response_line.message.as_deref(), Some("OK"));
+        match &res.status_line {
+            StatusLine::TunnelResponse(line) => {
+                assert_eq!(line.version.as_str(), "WEBHOOK/1.0");
+                assert_eq!(line.status_code, 200);
+                assert_eq!(line.message.as_deref(), Some("OK"));
+            }
+            _ => panic!("Invalid status line"),
+        }
 
         // No headers
         assert_eq!(res.headers.len(), 0);
@@ -444,14 +712,19 @@ mod tests {
         );
 
         let buffer_bytes = buffer.as_bytes();
-        let res = TunnelResponse::from_buffer(buffer_bytes);
+        let res = TunnelMessage::from_buffer(buffer_bytes);
         assert!(res.is_ok());
 
-        let res = res.expect("TunnelResponse must be created");
+        let res = res.expect("TunnelMessage must be created");
 
-        assert_eq!(res.response_line.version.as_str(), "HTTP/1.1");
-        assert_eq!(res.response_line.status_code, 200);
-        assert_eq!(res.response_line.message.as_deref(), Some("OK"));
+        match &res.status_line {
+            StatusLine::HttpResponse(line) => {
+                assert_eq!(line.version.as_str(), "HTTP/1.1");
+                assert_eq!(line.status_code, 200);
+                assert_eq!(line.message.as_deref(), Some("OK"));
+            }
+            _ => panic!("Invalid status line"),
+        }
 
         assert_eq!(res.headers.len(), 2);
 

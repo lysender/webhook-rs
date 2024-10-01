@@ -8,6 +8,8 @@ use tokio::{
 
 use tracing::{error, info};
 
+use crate::parser::StatusLine;
+use crate::parser::TunnelMessage;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(config: &ClientConfig) {
@@ -48,99 +50,103 @@ async fn handle_connection(
 ) -> Result<()> {
     info!("Authenticating to server...");
 
-    // Before reading incoming messages, send a message to the server first
+    // Before reading incoming messages, authenticate to the server first
     let token = create_auth_token(&config.jwt_secret)?;
-    let auth_msg = format!("AUTH /auth WEBHOOK/1.0\r\nAuthorization: {}\r\n", token);
-    let write_res = stream.write_all(auth_msg.as_bytes()).await;
+    let auth_req = TunnelMessage::with_tunnel_auth(token);
+    let write_res = stream.write_all(&auth_req.into_bytes()).await;
 
     if let Err(write_err) = write_res {
         let msg = format!("Authenticating to server failed: {}", write_err);
         return Err(msg.into());
     }
 
-    // Try to read messages with a large buffer first, let's see what happens
-    // TODO: Handle when data won't fit in the buffer
+    // Authentication exchange should fit in 4k buffer
     let mut buffer = [0; 4096];
-    loop {
-        match stream.read(&mut buffer).await {
-            Ok(0) => {
-                // End of line
-                error!("Server closed the connection.");
-                break;
-            }
-            Ok(n) => {
-                // We got filled, let's read it
-                let message = String::from_utf8_lossy(&buffer[..n]).to_string();
-
-                let handled_res =
-                    handle_server_response(crawler.clone(), config, message.as_str()).await?;
-                if let Some(forward_res) = handled_res {
-                    if let Err(fwr_err) = stream.write_all(forward_res.as_bytes()).await {
-                        let msg = format!("Unable to send back response: {}", fwr_err);
-                        return Err(msg.into());
-                    }
+    match stream.read(&mut buffer).await {
+        Ok(0) => {
+            // No data to read, so we treat this as invalid connection
+            Err("No data received from server.".into())
+        }
+        Ok(n) => {
+            // We got filled, let's read it
+            let res = TunnelMessage::from_buffer(&buffer[..n])?;
+            let handled_res = handle_server_response(crawler.clone(), config, res).await?;
+            if let Some(forward_res) = handled_res {
+                if let Err(fwr_err) = stream.write_all(forward_res.as_bytes()).await {
+                    let msg = format!("Unable to send back response: {}", fwr_err);
+                    return Err(msg.into());
                 }
             }
-            Err(e) => {
-                error!("Failed to read from server stream: {}", e);
-                return Ok(());
-            }
+
+            Ok(())
+        }
+        Err(e) => {
+            let msg = format!("Failed to read from server stream: {}", e);
+            Err(msg.into())
         }
     }
-
-    Ok(())
 }
 
 async fn handle_server_response(
     crawler: Client,
     config: &ClientConfig,
-    message: &str,
+    message: TunnelMessage,
 ) -> Result<Option<String>> {
-    // Get the request line
-    if let Some(first_pos) = message.find("\r\n") {
-        let (request_line, remaining) = message.split_at(first_pos);
-
-        match request_line {
-            "WEBHOOK/1.0 200 OK" => {
-                info!("Authentication to server successful.");
-                return Ok(None);
-            }
-            "WEBHOOK/1.0 401 Unauthorized" => {
-                error!("Authentication to server failed.");
-                return Err("Authentication to server failed.".into());
-            }
-            "FORWARD /webhook WEBHOOK/1.0" => {
-                // Do the forwarding here...
-                // Strip the next empty line then forward the rest
-                let remaining_data = &remaining[4..];
-                let f_res = forward_request(crawler, config, remaining_data).await?;
+    match &message.status_line {
+        StatusLine::TunnelRequest(req) => {
+            // Handle tunnel requests
+            if req.method.as_str() == "FORWARD" {
+                // Handle webhook requests
+                let f_res = forward_request(crawler, config, &message.initial_body).await?;
                 // Return the response from target app if there are any
                 return Ok(Some(f_res));
             }
-            _ => {
-                let msg = format!("Unrecognized request line: {}", request_line);
-                error!(msg);
-                return Err(msg.into());
+
+            Ok(None)
+        }
+        StatusLine::TunnelResponse(res) => {
+            // Handle tunnel responses
+            match res.status_code {
+                200 => {
+                    info!("Authentication to server successful.");
+                    return Ok(None);
+                }
+                401 => {
+                    error!("Authentication to server failed.");
+                    return Err("Authentication to server failed.".into());
+                }
+                _ => {
+                    let msg = format!("Unrecognized status code: {}", res.status_code);
+                    error!(msg);
+                    return Err(msg.into());
+                }
             }
         }
+        _ => {
+            let msg = format!("Unsupported tunnel message");
+            error!(msg);
+            return Err(msg.into());
+        }
     }
-
-    error!("No request line found.");
-    Err("No request line found.".into())
 }
 
-async fn forward_request(crawler: Client, config: &ClientConfig, message: &str) -> Result<String> {
-    // We actually need to parse the message, my goodness
-    let mut rn_lines = message.split("\r\n");
+async fn forward_request(crawler: Client, config: &ClientConfig, buffer: &[u8]) -> Result<String> {
+    let message = TunnelMessage::from_buffer(buffer)?;
+    let st_opt = match &message.status_line {
+        StatusLine::HttpRequest(s) => Some(s),
+        _ => None,
+    };
 
-    let request_line = rn_lines.next().unwrap();
-    info!("Forwarding request: {}", request_line);
+    let Some(st) = st_opt else {
+        return Err("Invalid HTTP request payload.".into());
+    };
+
+    let method = st.method.as_str();
+    let uri = st.path.as_str();
+
+    info!("Forwarding request: {} {}", method, uri);
 
     // Figure out the method
-    let mut rl_parts = request_line.split_whitespace();
-    let method = rl_parts.next().unwrap();
-    let uri = rl_parts.next().unwrap();
-
     // We assume that the target is a localhost address
     let url = format!(
         "http://{}:{}{}",
@@ -149,38 +155,19 @@ async fn forward_request(crawler: Client, config: &ClientConfig, message: &str) 
 
     let mut r = crawler.request(ReqwestMethod::from_bytes(method.as_bytes()).unwrap(), url);
 
-    let mut is_body = false;
-    let mut body: Vec<u8> = Vec::new();
-
     // Inject headers
-    for header_line in rn_lines {
-        if header_line == "" {
-            // Could be the end of headers
-            // body next...
-            is_body = true;
-            continue;
-        }
-
-        if is_body {
-            let line = header_line.to_string();
-            body.extend_from_slice(&line.as_bytes());
+    for (k, v) in message.headers.iter() {
+        // Inject headers
+        if k == "host" {
+            // Rename host
+            r = r.header("host", &config.target_host);
         } else {
-            // Inject headers
-            let mut h_parts = header_line.split(": ");
-            let h_k = h_parts.next().unwrap();
-            let h_v = h_parts.next().unwrap();
-
-            if h_k == "host" {
-                // Rename host
-                r = r.header("host", &config.target_host);
-            } else {
-                r = r.header(h_k, h_v);
-            }
+            r = r.header(k, v);
         }
     }
 
-    if body.len() > 0 {
-        r = r.body(body);
+    if message.initial_body.len() > 0 {
+        r = r.body(message.initial_body);
     }
 
     let response = r.send().await;
