@@ -9,7 +9,7 @@ use tracing::{error, info};
 
 use crate::{
     config::ServerConfig,
-    parser::{ResponseLine, StatusLine, TunnelMessage},
+    parser::{ResponseLine, StatusLine, TunnelMessage, WEBHOOK_OP_AUTH_RES, X_WEEB_HOOK_OP},
     Error,
 };
 use crate::{token::verify_auth_token, Result};
@@ -173,18 +173,23 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
         Ok(0) => Err("Connection from client closed.".into()),
         Ok(n) => {
             let request = TunnelMessage::from_buffer(&buffer[..n])?;
-            if !request.is_tunnel_auth() {
+            if !request.is_auth() {
                 return Err("Invalid tunnel auth request.".into());
             }
 
-            if valid_auth(request, &config.jwt_secret).is_ok() {
+            if valid_auth(&request, &config.jwt_secret).is_ok() {
                 // Send response to client
-                let ok_st = StatusLine::TunnelResponse(ResponseLine::new(
-                    "WEBHOOK/1.0".to_string(),
+                let ok_st = StatusLine::Response(ResponseLine::new(
+                    "HTTP/1.1".to_string(),
                     200,
                     Some("OK".to_string()),
                 ));
-                let ok_msg = TunnelMessage::new(ok_st);
+
+                let mut ok_msg = TunnelMessage::new(ok_st);
+                ok_msg
+                    .headers
+                    .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
+
                 if let Err(reply_err) = client.write(&ok_msg.into_bytes()).await {
                     let msg = format!("Sending OK reply failed: {}", reply_err);
                     return Err(msg.into());
@@ -197,12 +202,17 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
                 error!("Invalid authorization code.");
 
                 // Send auth failed error to client
-                let err_st = StatusLine::TunnelResponse(ResponseLine::new(
-                    "WEBHOOK/1.0".to_string(),
+                let err_st = StatusLine::Response(ResponseLine::new(
+                    "HTTP/1.1".to_string(),
                     401,
                     Some("Unauthorized".to_string()),
                 ));
-                let err_msg = TunnelMessage::new(err_st);
+
+                let mut err_msg = TunnelMessage::new(err_st);
+                err_msg
+                    .headers
+                    .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
+
                 if let Err(reply_err) = client.write(&err_msg.into_bytes()).await {
                     let msg = format!("Sending Unauthorized reply failed: {}", reply_err);
                     return Err(msg.into());
@@ -218,11 +228,10 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
     }
 }
 
-fn valid_auth(request: TunnelMessage, secret: &str) -> Result<()> {
+fn valid_auth(request: &TunnelMessage, secret: &str) -> Result<()> {
     // Find the auth token
-    let Some((_, token)) = request.headers.iter().find(|(k, _)| k == "authorization") else {
-        return Err(Error::InvalidAuthToken);
-    };
-
-    verify_auth_token(token, secret)
+    match request.webhook_token() {
+        Some(token) => verify_auth_token(token, secret),
+        None => Err(Error::InvalidAuthToken),
+    }
 }

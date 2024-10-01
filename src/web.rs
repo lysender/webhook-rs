@@ -15,6 +15,8 @@ use crate::config::ServerConfig;
 use crate::parser::RequestLine;
 use crate::parser::StatusLine;
 use crate::parser::TunnelMessage;
+use crate::parser::WEBHOOK_OP_FORWARD;
+use crate::parser::X_WEEB_HOOK_OP;
 use crate::tunnel::TunnelClient;
 use crate::Error;
 use crate::Result;
@@ -90,7 +92,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
         let method = request.method().to_string();
 
         // Build original request
-        let http_st = StatusLine::HttpRequest(RequestLine::new(
+        let http_st = StatusLine::Request(RequestLine::new(
             method.clone(),
             uri,
             "HTTP/1.1".to_string(),
@@ -104,6 +106,11 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
             .collect();
 
+        // Add custom headers for forwarding
+        http_req
+            .headers
+            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
+
         // Add original body if present
         let with_body = vec!["POST", "PUT", "PATCH"];
         if with_body.contains(&method.as_str()) {
@@ -111,16 +118,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
             http_req.initial_body = body_bytes.to_vec();
         }
 
-        // Wrap request into a tunnel request message
-        let tunnel_st = StatusLine::TunnelRequest(RequestLine::new(
-            "FORWARD".to_string(),
-            "/webhook".to_string(),
-            "WEBHOOK/1.0".to_string(),
-        ));
-        let mut tunnel_req = TunnelMessage::new(tunnel_st);
-        tunnel_req.initial_body = http_req.into_bytes();
-
-        if let Err(write_err) = client.write(&tunnel_req.into_bytes()).await {
+        if let Err(write_err) = client.write(&http_req.into_bytes()).await {
             return handle_forward_error(Some(write_err));
         } else {
             // Read from client response
@@ -135,13 +133,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
 
                         // Fully read the response, let's process it
                         if let Some(res) = tunnel_res.take() {
-                            if let Some(http_res) = res.http_response() {
-                                return handle_forward_success(http_res);
-                            } else {
-                                return handle_forward_error(Some(Error::AnyError(
-                                    "Invalid response from connected client.".to_string(),
-                                )));
-                            }
+                            return handle_forward_success(res);
                         } else {
                             return handle_forward_error(Some(Error::AnyError(
                                 "No response from connected client.".to_string(),
@@ -184,7 +176,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
 
 fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
     let st_opt = match fw_res.status_line {
-        StatusLine::HttpResponse(st) => Some(st),
+        StatusLine::Response(st) => Some(st),
         _ => None,
     };
 

@@ -10,6 +10,8 @@ use tracing::{error, info};
 
 use crate::parser::StatusLine;
 use crate::parser::TunnelMessage;
+use crate::parser::X_WEEB_HOOK_OP;
+use crate::parser::X_WEEB_HOOK_TOKEN;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(config: &ClientConfig) {
@@ -100,53 +102,39 @@ async fn handle_server_response(
     config: &ClientConfig,
     message: TunnelMessage,
 ) -> Result<Option<String>> {
-    match &message.status_line {
-        StatusLine::TunnelRequest(req) => {
-            // Handle tunnel requests
-            if req.method.as_str() == "FORWARD" {
-                // Handle webhook requests
-                let f_res = forward_request(crawler, config, &message.initial_body).await?;
-                // Return the response from target app if there are any
-                return Ok(Some(f_res));
-            }
-
-            Ok(None)
+    if message.is_forward() {
+        // Handle webhook requests
+        let f_res = forward_request(crawler, config, message).await?;
+        // Return the response from target app if there are any
+        return Ok(Some(f_res));
+    } else if message.is_auth_response() {
+        if message.status_line.is_ok() {
+            info!("Authentication to server successful.");
+            return Ok(None);
+        } else {
+            error!("Authentication to server failed.");
+            return Err("Authentication to server failed.".into());
         }
-        StatusLine::TunnelResponse(res) => {
-            // Handle tunnel responses
-            match res.status_code {
-                200 => {
-                    info!("Authentication to server successful.");
-                    return Ok(None);
-                }
-                401 => {
-                    error!("Authentication to server failed.");
-                    return Err("Authentication to server failed.".into());
-                }
-                _ => {
-                    let msg = format!("Unrecognized status code: {}", res.status_code);
-                    error!(msg);
-                    return Err(msg.into());
-                }
-            }
-        }
-        _ => {
-            let msg = format!("Unsupported tunnel message");
-            error!(msg);
-            return Err(msg.into());
-        }
+    } else {
+        let msg = format!("Unsupported tunnel message");
+        error!(msg);
+        return Err(msg.into());
     }
 }
 
-async fn forward_request(crawler: Client, config: &ClientConfig, buffer: &[u8]) -> Result<String> {
-    let message = TunnelMessage::from_buffer(buffer)?;
-    let st_opt = match &message.status_line {
-        StatusLine::HttpRequest(s) => Some(s),
+async fn forward_request(
+    crawler: Client,
+    config: &ClientConfig,
+    message: TunnelMessage,
+) -> Result<String> {
+    let st_opt = match message.status_line {
+        StatusLine::Request(req) => Some(req),
         _ => None,
     };
-
     let Some(st) = st_opt else {
-        return Err("Invalid HTTP request payload.".into());
+        let msg = format!("Invalid tunnel message");
+        error!(msg);
+        return Err(msg.into());
     };
 
     let method = st.method.as_str();
@@ -165,7 +153,11 @@ async fn forward_request(crawler: Client, config: &ClientConfig, buffer: &[u8]) 
 
     // Inject headers
     for (k, v) in message.headers.iter() {
-        // Inject headers
+        // Skip some custom headers
+        if k == X_WEEB_HOOK_OP || k == X_WEEB_HOOK_TOKEN {
+            continue;
+        }
+
         if k == "host" {
             // Rename host
             r = r.header("host", &config.target_host);

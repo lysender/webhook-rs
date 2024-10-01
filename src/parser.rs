@@ -13,6 +13,7 @@ pub const WEBHOOK_OP_AUTH: &'static str = "auth";
 pub const WEBHOOK_OP_AUTH_PATH: &'static str = "/_x_weeb_hook_auth";
 pub const WEBHOOK_OP_AUTH_RES: &'static str = "auth-res";
 pub const WEBHOOK_OP_FORWARD: &'static str = "forward";
+pub const WEBHOOK_OP_FORWARD_PATH: &'static str = "/_x_weeb_hook_forward";
 pub const WEBHOOK_OP_FORWARD_RES: &'static str = "forward-res";
 
 #[derive(Debug)]
@@ -148,6 +149,13 @@ impl StatusLine {
             _ => false,
         }
     }
+
+    pub fn is_ok(&self) -> bool {
+        match self {
+            StatusLine::Response(line) => line.status_code == 200,
+            _ => false,
+        }
+    }
 }
 
 fn parse_status_line(line: &str) -> Result<StatusLine> {
@@ -236,15 +244,96 @@ impl TunnelMessage {
         })
     }
 
-    pub fn is_tunnel_auth(&self) -> bool {
-        match &self.status_line {
+    pub fn is_auth(&self) -> bool {
+        if !self.is_request() {
+            return false;
+        }
+
+        let valid_status = match &self.status_line {
             StatusLine::Request(line) => {
                 line.method.as_str() == "POST"
                     && line.path.as_str() == WEBHOOK_OP_AUTH_PATH
                     && line.version.as_str() == "HTTP/1.1"
             }
             _ => false,
+        };
+
+        if !valid_status {
+            return false;
         }
+
+        self.webhook_op()
+            .map(|op| op == WEBHOOK_OP_AUTH)
+            .unwrap_or(false)
+    }
+
+    pub fn is_auth_response(&self) -> bool {
+        if !self.is_response() {
+            return false;
+        }
+
+        let valid_status = match &self.status_line {
+            StatusLine::Response(line) => {
+                line.version.as_str() == "HTTP/1.1"
+                    && line.status_code == 200
+                    && line.message.as_deref() == Some("OK")
+            }
+            _ => false,
+        };
+
+        if !valid_status {
+            return false;
+        }
+
+        self.webhook_op()
+            .map(|op| op == WEBHOOK_OP_AUTH_RES)
+            .unwrap_or(false)
+    }
+
+    pub fn is_forward(&self) -> bool {
+        if !self.is_request() {
+            return false;
+        }
+
+        let valid_status = match &self.status_line {
+            StatusLine::Request(line) => {
+                line.method.as_str() == "POST"
+                    && line.path.as_str() == WEBHOOK_OP_FORWARD_PATH
+                    && line.version.as_str() == "HTTP/1.1"
+            }
+            _ => false,
+        };
+
+        if !valid_status {
+            return false;
+        }
+
+        self.webhook_op()
+            .map(|op| op == WEBHOOK_OP_FORWARD)
+            .unwrap_or(false)
+    }
+
+    pub fn is_forward_response(&self) -> bool {
+        if !self.is_response() {
+            return false;
+        }
+
+        let valid_status = match &self.status_line {
+            StatusLine::Response(line) => {
+                line.version.as_str() == "HTTP/1.1"
+                    && line.status_code == 200
+                    && line.message.as_deref() == Some("OK")
+            }
+            _ => false,
+        };
+
+        if !valid_status {
+            return false;
+        }
+
+        self.webhook_op()
+            .map(|op| op == WEBHOOK_OP_FORWARD_RES)
+            .unwrap_or(false)
     }
 
     pub fn is_request(&self) -> bool {
