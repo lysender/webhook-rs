@@ -3,6 +3,9 @@ use crate::{Error, Result};
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
+// Added to the tunnel message body to indicate the end of the message
+pub const TUNNEL_EOF: &[u8] = b"<<[[((^_^))]]>>";
+
 // Custom header names
 // Don't judge me
 pub const X_WEEB_HOOK_OP: &'static str = "x-weeb-hook-op";
@@ -323,6 +326,29 @@ impl TunnelMessage {
             .iter()
             .find(|(k, _)| k.as_str() == X_WEEB_HOOK_TOKEN)
             .map(|(_, v)| v.as_str())
+    }
+
+    pub fn into_bytes_with_eof(&self) -> Vec<u8> {
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // Request line
+        buffer.extend_from_slice(&self.status_line.into_bytes());
+
+        // Headers
+        for (k, v) in self.headers.iter() {
+            let header_line = format!("{}: {}\r\n", k, v);
+            buffer.extend_from_slice(&header_line.as_bytes());
+        }
+
+        // If there is a body, insert a blank line then the body
+        if self.initial_body.len() > 0 {
+            buffer.extend_from_slice(b"\r\n");
+            buffer.extend_from_slice(&self.initial_body);
+        }
+
+        buffer.extend_from_slice(TUNNEL_EOF);
+
+        buffer
     }
 
     pub fn into_bytes(&self) -> Vec<u8> {

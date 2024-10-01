@@ -59,7 +59,7 @@ async fn handle_connection(
     // Before reading incoming messages, authenticate to the server first
     let token = create_auth_token(&config.jwt_secret)?;
     let auth_req = TunnelMessage::with_tunnel_auth(token);
-    let write_res = stream.write_all(&auth_req.into_bytes()).await;
+    let write_res = stream.write_all(&auth_req.into_bytes_with_eof()).await;
 
     if let Err(write_err) = write_res {
         let msg = format!("Authenticating to server failed: {}", write_err);

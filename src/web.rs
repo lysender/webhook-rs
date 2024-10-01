@@ -118,7 +118,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
             http_req.initial_body = body_bytes.to_vec();
         }
 
-        if let Err(write_err) = client.write(&http_req.into_bytes()).await {
+        if let Err(write_err) = client.write(&http_req.into_bytes_with_eof()).await {
             return handle_forward_error(Some(write_err));
         } else {
             // Read from client response
