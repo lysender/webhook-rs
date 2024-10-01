@@ -1,12 +1,30 @@
 use crate::{Error, Result};
 
-pub const CARRIAGE_RETURN: u8 = b'\r';
-pub const LINE_FEED: u8 = b'\n';
+const CR: u8 = b'\r';
+const LF: u8 = b'\n';
+
+// Custom header names
+// Don't judge me
+pub const X_WEEB_HOOK_OP: &'static str = "x-weeb-hook-op";
+pub const X_WEEB_HOOK_TOKEN: &'static str = "x-weeb-hook-token";
+
+// Custom header possible values
+pub const WEBHOOK_OP_AUTH: &'static str = "auth";
+pub const WEBHOOK_OP_AUTH_PATH: &'static str = "/_x_weeb_hook_auth";
+pub const WEBHOOK_OP_AUTH_RES: &'static str = "auth-res";
+pub const WEBHOOK_OP_FORWARD: &'static str = "forward";
+pub const WEBHOOK_OP_FORWARD_RES: &'static str = "forward-res";
 
 #[derive(Debug)]
 struct BufferLine {
     line: String,
     next_start: Option<usize>,
+}
+
+#[derive(Debug)]
+struct BufferHeader {
+    data: String,
+    body_start: Option<usize>,
 }
 
 type HeaderItem = (String, String);
@@ -105,19 +123,29 @@ impl ResponseLine {
 
 #[derive(Debug)]
 pub enum StatusLine {
-    TunnelRequest(RequestLine),
-    TunnelResponse(ResponseLine),
-    HttpRequest(RequestLine),
-    HttpResponse(ResponseLine),
+    Request(RequestLine),
+    Response(ResponseLine),
 }
 
 impl StatusLine {
     pub fn into_bytes(&self) -> Vec<u8> {
         match self {
-            StatusLine::TunnelRequest(line) => line.into_bytes(),
-            StatusLine::TunnelResponse(line) => line.into_bytes(),
-            StatusLine::HttpRequest(line) => line.into_bytes(),
-            StatusLine::HttpResponse(line) => line.into_bytes(),
+            StatusLine::Request(line) => line.into_bytes(),
+            StatusLine::Response(line) => line.into_bytes(),
+        }
+    }
+
+    pub fn is_request(&self) -> bool {
+        match self {
+            StatusLine::Request(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_response(&self) -> bool {
+        match self {
+            StatusLine::Response(_) => true,
+            _ => false,
         }
     }
 }
@@ -130,26 +158,14 @@ fn parse_status_line(line: &str) -> Result<StatusLine> {
     };
 
     match first {
-        "AUTH" | "FORWARD" => {
-            // This is a tunnel request
-            let st = RequestLine::parse(line)?;
-            Ok(StatusLine::TunnelRequest(st))
-        }
-        "WEBHOOK/1.0" => {
-            // This is a tunnel response
-            let st = ResponseLine::parse(line)?;
-            Ok(StatusLine::TunnelResponse(st))
-        }
         "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {
-            // This is a HTTP request
             let st = RequestLine::parse(line)?;
-            Ok(StatusLine::HttpRequest(st))
+            Ok(StatusLine::Request(st))
         }
         "HTTP/1.1" | "HTTP/1.0" => {
-            // This is a HTTP response
             // We don't support HTTP/2 yet, probably never
             let st = ResponseLine::parse(line)?;
-            Ok(StatusLine::HttpResponse(st))
+            Ok(StatusLine::Response(st))
         }
         _ => Err(Error::TunnelStatusLineInvalid),
     }
@@ -172,65 +188,43 @@ impl TunnelMessage {
     }
 
     pub fn with_tunnel_auth(token: String) -> Self {
-        let st = StatusLine::TunnelRequest(RequestLine::new(
-            "AUTH".to_string(),
-            "/auth".to_string(),
-            "WEBHOOK/1.0".to_string(),
+        let st = StatusLine::Request(RequestLine::new(
+            "POST".to_string(),
+            "/_x_weeb_hook_auth".to_string(),
+            "HTTP/1.1".to_string(),
         ));
 
         let mut req = Self::new(st);
-        req.headers.push(("Authorization".to_string(), token));
+        req.headers
+            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH.to_string()));
+        req.headers.push((X_WEEB_HOOK_TOKEN.to_string(), token));
         req
     }
 
+    /// Parse the buffer for header data, include partial body if present
     pub fn from_buffer(buffer: &[u8]) -> Result<Self> {
-        // Read the request line
-        let Some(req_bufline) = read_buffer_line(buffer, 0) else {
+        let Some(header) = read_buffer_header(buffer) else {
             return Err(Error::TunnelMessageInvalid);
         };
 
-        // Do not parse the first line yet, assume it is valid
-        let status_line = parse_status_line(req_bufline.line.as_str())?;
+        let mut lines = header.data.lines();
+        let first_line = lines.next().unwrap().trim();
+        let status_line = parse_status_line(first_line)?;
 
         let mut headers: Vec<HeaderItem> = Vec::new();
-        let mut body_start: Option<usize> = None;
 
-        // Message headers next
-        if let Some(start) = req_bufline.next_start {
-            let mut next_start = start;
-
-            // Parse the remaining of the buffer for headers and possibly body
-            while let Some(bufline) = read_buffer_line(buffer, next_start) {
-                if bufline.line.is_empty() {
-                    // End of headers
-                    // See if we have a body
-                    if let Some(b_start) = bufline.next_start {
-                        body_start = Some(b_start);
-                    }
-                    break;
+        // Read the rest of the headers
+        for line in lines {
+            let h_line = line.trim();
+            if h_line.len() >= 3 {
+                if let Some((k, v)) = h_line.split_once(":") {
+                    headers.push((k.to_lowercase(), v.trim().to_string()));
                 }
-
-                let Some((k, v)) = bufline.line.split_once(":") else {
-                    return Err(Error::RequestHeaderInvalid);
-                };
-
-                // Simplify headers by forcing it be lowercase
-                headers.push((k.to_lowercase(), v.trim().to_string()));
-
-                match bufline.next_start {
-                    Some(next) => {
-                        next_start = next;
-                    }
-                    None => {
-                        // No more headers
-                        break;
-                    }
-                };
             }
         }
 
         let mut initial_body: Vec<u8> = Vec::new();
-        if let Some(b_start) = body_start {
+        if let Some(b_start) = header.body_start {
             // Consume the rest of the content as body
             initial_body.extend_from_slice(&buffer[b_start..]);
         }
@@ -244,54 +238,35 @@ impl TunnelMessage {
 
     pub fn is_tunnel_auth(&self) -> bool {
         match &self.status_line {
-            StatusLine::TunnelRequest(line) => {
-                line.method.as_str() == "AUTH"
-                    && line.path.as_str() == "/auth"
-                    && line.version.as_str() == "WEBHOOK/1.0"
+            StatusLine::Request(line) => {
+                line.method.as_str() == "POST"
+                    && line.path.as_str() == WEBHOOK_OP_AUTH_PATH
+                    && line.version.as_str() == "HTTP/1.1"
             }
             _ => false,
         }
     }
 
-    pub fn is_tunnel_request(&self) -> bool {
-        match &self.status_line {
-            StatusLine::TunnelRequest(_) => true,
-            _ => false,
-        }
+    pub fn is_request(&self) -> bool {
+        self.status_line.is_request()
     }
 
-    pub fn is_tunnel_response(&self) -> bool {
-        match &self.status_line {
-            StatusLine::TunnelResponse(_) => true,
-            _ => false,
-        }
+    pub fn is_response(&self) -> bool {
+        self.status_line.is_response()
     }
 
-    pub fn is_http_request(&self) -> bool {
-        match &self.status_line {
-            StatusLine::HttpRequest(_) => true,
-            _ => false,
-        }
+    pub fn webhook_op(&self) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.as_str() == X_WEEB_HOOK_OP)
+            .map(|(_, v)| v.as_str())
     }
 
-    pub fn is_http_response(&self) -> bool {
-        match &self.status_line {
-            StatusLine::HttpResponse(_) => true,
-            _ => false,
-        }
-    }
-
-    pub fn http_response(&self) -> Option<TunnelMessage> {
-        if !self.is_tunnel_response() {
-            return None;
-        }
-
-        if self.initial_body.len() == 0 {
-            return None;
-        }
-
-        // Assumes body is HTTP response
-        Self::from_buffer(&self.initial_body).ok()
+    pub fn webhook_token(&self) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.as_str() == X_WEEB_HOOK_TOKEN)
+            .map(|(_, v)| v.as_str())
     }
 
     pub fn into_bytes(&self) -> Vec<u8> {
@@ -306,7 +281,7 @@ impl TunnelMessage {
             buffer.extend_from_slice(&header_line.as_bytes());
         }
 
-        // If there is a body, insert a blank line
+        // If there is a body, insert a blank line then the body
         if self.initial_body.len() > 0 {
             buffer.extend_from_slice(b"\r\n");
             buffer.extend_from_slice(&self.initial_body);
@@ -316,26 +291,32 @@ impl TunnelMessage {
     }
 }
 
-/// Reads a header buffer line and return the string and the next start position
-fn read_buffer_line(buffer: &[u8], start: usize) -> Option<BufferLine> {
-    let res = buffer
-        .windows(2)
-        .skip(start)
-        .position(|w| w == &[CARRIAGE_RETURN, LINE_FEED]);
+// Parses buffer for header data, include body start index if present
+fn read_buffer_header(buffer: &[u8]) -> Option<BufferHeader> {
+    if buffer.len() == 0 {
+        return None;
+    }
 
-    if let Some(pos) = res {
-        // Found it, let's parse the line
-        let line = String::from_utf8_lossy(&buffer[start..(start + pos)]).to_string();
-        let next_start: Option<usize> = if (start + pos + 2) < buffer.len() {
-            Some(start + pos + 2)
+    // Find the body separator
+    if let Some(pos) = buffer.windows(4).position(|w| w == [CR, LF, CR, LF]) {
+        // We got a body, parse the entire header as string,
+        // and the starting position of the body
+        let data = String::from_utf8_lossy(&buffer[..pos]).to_string();
+        let body_start: Option<usize> = if (pos + 4) < buffer.len() {
+            Some(pos + 4)
         } else {
             None
         };
 
-        return Some(BufferLine { line, next_start });
+        return Some(BufferHeader { data, body_start });
     }
 
-    None
+    // The entire data might be all headers
+    let data = String::from_utf8_lossy(&buffer).to_string();
+    Some(BufferHeader {
+        data,
+        body_start: None,
+    })
 }
 
 #[cfg(test)]
@@ -343,127 +324,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_read_buffer_line() {
-        let buffer = format!(
-            "{}\r\n{}\r\n",
-            "AUTH /auth WEBHOOK/1.0", "Authorization: token"
-        );
+    fn test_read_buffer_header() {
+        let data = format!("{}\r\n{}\r\n", "GET / HTTP/1.1", "User-Agent: Insomia");
+        let buffer = data.as_bytes();
 
-        let buffer_bytes = buffer.as_bytes();
-        let res = read_buffer_line(buffer_bytes, 0);
+        let res = read_buffer_header(buffer);
         assert!(res.is_some());
 
-        let req = res.expect("BufferLine must be created");
-        assert_eq!(req.line.as_str(), "AUTH /auth WEBHOOK/1.0");
-        assert_eq!(req.next_start, Some(24));
-
-        let next_start = req.next_start.expect("Next start must be set");
-        let auth_res = read_buffer_line(buffer_bytes, next_start);
-        assert!(auth_res.is_some());
-
-        let auth = auth_res.expect("BufferLine must be created");
-        assert_eq!(auth.line.as_str(), "Authorization: token");
-        assert_eq!(auth.next_start, None);
+        let header = res.unwrap();
+        assert_eq!(header.data.len(), 37);
+        assert!(header.body_start.is_none());
     }
 
     #[test]
-    fn test_read_tunnel_request() {
-        let buffer = format!(
-            "{}\r\n{}\r\n{}\r\n{}\r\n",
-            "AUTH /auth WEBHOOK/1.0",
-            "Authorization: token",
-            "User-Agent: rust-testing",
-            "X-Foo-Bar:baz"
+    fn test_read_buffer_header_with_body() {
+        let data = format!(
+            "{}\r\n{}\r\n\r\n{}",
+            "POST /auth HTTP/1.1", "User-Agent: Disturbia", "username=rihanna"
         );
+        let buffer = data.as_bytes();
 
-        let buffer_bytes = buffer.as_bytes();
-        let res = TunnelMessage::from_buffer(buffer_bytes);
-        assert!(res.is_ok());
+        let res = read_buffer_header(buffer);
+        assert!(res.is_some());
 
-        let req = res.expect("TunnelMessage must be created");
+        let header = res.unwrap();
+        assert_eq!(header.data.len(), 37);
+        assert!(header.body_start.is_some());
 
-        assert!(req.is_tunnel_request());
-
-        match &req.status_line {
-            StatusLine::TunnelRequest(line) => {
-                assert_eq!(line.method.as_str(), "AUTH");
-                assert_eq!(line.path.as_str(), "/auth");
-                assert_eq!(line.version.as_str(), "WEBHOOK/1.0");
-            }
-            _ => panic!("Invalid status line"),
-        }
-
-        assert_eq!(req.headers.len(), 3);
-
-        let mut headers = req.headers.iter();
-        let auth = headers
-            .next()
-            .expect("Authorization header must be present");
-        assert_eq!(auth.0.as_str(), "authorization");
-        assert_eq!(auth.1.as_str(), "token");
-
-        let ua = headers.next().expect("User-Agent header must be present");
-        assert_eq!(ua.0.as_str(), "user-agent");
-        assert_eq!(ua.1.as_str(), "rust-testing");
-
-        let foo = headers.next().expect("X-Foo-Bar header must be present");
-        assert_eq!(foo.0.as_str(), "x-foo-bar");
-        assert_eq!(foo.1.as_str(), "baz");
+        let body_start = header.body_start.unwrap();
+        assert_eq!(body_start, 41);
     }
 
     #[test]
-    fn test_read_tunnel_request_with_body() {
-        let buffer = format!(
-            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
-            "FORWARD /webhook WEBHOOK/1.0",
-            "Authorization: token",
-            "User-Agent: rust:testing",
-            "X-Foo-Bar:baz",
-            "",
-            "POST /webhook HTTP/1.1",
-            "Content-Type: application/json",
-            "Content-Length: 13",
-            "",
-            "{\"foo\":\"bar\"}",
-        );
-
-        let buffer_bytes = buffer.as_bytes();
-        let res = TunnelMessage::from_buffer(buffer_bytes);
-        assert!(res.is_ok());
-
-        let req = res.expect("TunnelMessage must be created");
-
-        match &req.status_line {
-            StatusLine::TunnelRequest(line) => {
-                assert_eq!(line.method.as_str(), "FORWARD");
-                assert_eq!(line.path.as_str(), "/webhook");
-                assert_eq!(line.version.as_str(), "WEBHOOK/1.0");
-            }
-            _ => panic!("Invalid status line"),
-        }
-
-        assert_eq!(req.headers.len(), 3);
-
-        let mut headers = req.headers.iter();
-        let auth = headers
-            .next()
-            .expect("Authorization header must be present");
-        assert_eq!(auth.0.as_str(), "authorization");
-        assert_eq!(auth.1.as_str(), "token");
-
-        let ua = headers.next().expect("User-Agent header must be present");
-        assert_eq!(ua.0.as_str(), "user-agent");
-        assert_eq!(ua.1.as_str(), "rust:testing");
-
-        let foo = headers.next().expect("X-Foo-Bar header must be present");
-        assert_eq!(foo.0.as_str(), "x-foo-bar");
-        assert_eq!(foo.1.as_str(), "baz");
-
-        assert_eq!(req.initial_body.len(), 91);
-    }
-
-    #[test]
-    fn test_read_http_request_with_body() {
+    fn test_read_request_with_body() {
         let buffer = format!(
             "{}\r\n{}\r\n{}\r\n{}\r\n{}",
             "POST /webhook HTTP/1.1",
@@ -480,7 +373,7 @@ mod tests {
         let req = res.expect("TunnelMessage must be created");
 
         match &req.status_line {
-            StatusLine::HttpRequest(line) => {
+            StatusLine::Request(line) => {
                 assert_eq!(line.method.as_str(), "POST");
                 assert_eq!(line.path.as_str(), "/webhook");
                 assert_eq!(line.version.as_str(), "HTTP/1.1");
@@ -505,42 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_tunnel_response_with_body() {
-        let buffer = format!(
-            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
-            "WEBHOOK/1.0 200 OK",
-            "",
-            "HTTP/1.1 200 OK",
-            "Content-Type: application/json",
-            "Content-Length: 13",
-            "",
-            "{\"foo\":\"bar\"}",
-        );
-
-        let buffer_bytes = buffer.as_bytes();
-        let res = TunnelMessage::from_buffer(buffer_bytes);
-        assert!(res.is_ok());
-
-        let res = res.expect("TunnelMessage must be created");
-
-        match &res.status_line {
-            StatusLine::TunnelResponse(line) => {
-                assert_eq!(line.version.as_str(), "WEBHOOK/1.0");
-                assert_eq!(line.status_code, 200);
-                assert_eq!(line.message.as_deref(), Some("OK"));
-            }
-            _ => panic!("Invalid status line"),
-        }
-
-        // No headers
-        assert_eq!(res.headers.len(), 0);
-
-        // Has body
-        assert_eq!(res.initial_body.len(), 84);
-    }
-
-    #[test]
-    fn test_read_http_response_with_body() {
+    fn test_read_response_with_body() {
         let buffer = format!(
             "{}\r\n{}\r\n{}\r\n{}\r\n{}",
             "HTTP/1.1 200 OK",
@@ -557,7 +415,7 @@ mod tests {
         let res = res.expect("TunnelMessage must be created");
 
         match &res.status_line {
-            StatusLine::HttpResponse(line) => {
+            StatusLine::Response(line) => {
                 assert_eq!(line.version.as_str(), "HTTP/1.1");
                 assert_eq!(line.status_code, 200);
                 assert_eq!(line.message.as_deref(), Some("OK"));
