@@ -139,8 +139,6 @@ async fn handle_server_response(
 }
 
 async fn forward_request(crawler: Client, config: &ClientConfig, buffer: &[u8]) -> Result<String> {
-    let full_body = String::from_utf8_lossy(buffer).to_string();
-
     let message = TunnelMessage::from_buffer(buffer)?;
     let st_opt = match &message.status_line {
         StatusLine::HttpRequest(s) => Some(s),
