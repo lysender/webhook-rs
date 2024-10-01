@@ -7,7 +7,7 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use crate::{config::ServerConfig, Error};
+use crate::{config::ServerConfig, parser::TunnelRequest, Error};
 use crate::{token::verify_auth_token, Result};
 
 pub struct TunnelClient {
@@ -163,13 +163,17 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
     let mut client = tunnel.lock().await;
 
     // This should be enough to verify auth requests
+    // We will simple ignore excess data
     let mut buffer = [0; 4096];
     match client.read(&mut buffer).await {
         Ok(0) => Err("Connection from client closed.".into()),
         Ok(n) => {
-            let message = String::from_utf8_lossy(&buffer[..n]).to_string();
+            let request = TunnelRequest::from_buffer(&buffer[..n])?;
+            if !request.is_tunnel_auth() {
+                return Err("Invalid tunnel auth request.".into());
+            }
 
-            if valid_auth(message.as_str(), &config.jwt_secret).is_ok() {
+            if valid_auth(request, &config.jwt_secret).is_ok() {
                 // Send response to client
                 if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\r\n").await {
                     let msg = format!("Sending OK reply failed: {}", reply_err);
@@ -198,18 +202,11 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
     }
 }
 
-fn valid_auth(message: &str, secret: &str) -> Result<()> {
-    // We expect 2 lines of data, the header command and the token header
-    let lines: Vec<&str> = message.lines().collect();
-    if lines.len() != 2 {
+fn valid_auth(request: TunnelRequest, secret: &str) -> Result<()> {
+    // Find the auth token
+    let Some((_, token)) = request.headers.iter().find(|(k, _)| k == "authorization") else {
         return Err(Error::InvalidAuthToken);
-    }
+    };
 
-    if lines[0] == "AUTH /auth WEBHOOK/1.0" && lines[1].starts_with("Authorization: ") {
-        if let Some(token) = lines[1].split(' ').last() {
-            return verify_auth_token(token, secret);
-        }
-    }
-
-    Err(Error::InvalidAuthToken)
+    verify_auth_token(token, secret)
 }

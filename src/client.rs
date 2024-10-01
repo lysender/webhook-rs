@@ -50,7 +50,7 @@ async fn handle_connection(
 
     // Before reading incoming messages, send a message to the server first
     let token = create_auth_token(&config.jwt_secret)?;
-    let auth_msg = format!("AUTH /auth WEBHOOK/1.0\r\nAuthorization: {}\n", token);
+    let auth_msg = format!("AUTH /auth WEBHOOK/1.0\r\nAuthorization: {}\r\n", token);
     let write_res = stream.write_all(auth_msg.as_bytes()).await;
 
     if let Err(write_err) = write_res {

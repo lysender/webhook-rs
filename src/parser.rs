@@ -127,7 +127,8 @@ impl TunnelRequest {
                     return Err(Error::RequestHeaderInvalid);
                 }
 
-                headers.push((parts[0].to_string(), parts[1].trim().to_string()));
+                // Simplify headers by forcing it be lowercase
+                headers.push((parts[0].to_lowercase(), parts[1].trim().to_string()));
 
                 match bufline.next_start {
                     Some(next) => {
@@ -152,6 +153,12 @@ impl TunnelRequest {
             headers,
             initial_body,
         })
+    }
+
+    pub fn is_tunnel_auth(&self) -> bool {
+        self.request_line.method.as_str() == "AUTH"
+            && self.request_line.path.as_str() == "/auth"
+            && self.request_line.version.as_str() == "WEBHOOK/1.0"
     }
 }
 
@@ -195,7 +202,8 @@ impl TunnelResponse {
                     return Err(Error::ResponseHeaderInvalid);
                 }
 
-                headers.push((parts[0].to_string(), parts[1].trim().to_string()));
+                // Simplify headers by forcing it be lowercase
+                headers.push((parts[0].to_lowercase(), parts[1].trim().to_string()));
 
                 match bufline.next_start {
                     Some(next) => {
@@ -299,15 +307,15 @@ mod tests {
         let auth = headers
             .next()
             .expect("Authorization header must be present");
-        assert_eq!(auth.0.as_str(), "Authorization");
+        assert_eq!(auth.0.as_str(), "authorization");
         assert_eq!(auth.1.as_str(), "token");
 
         let ua = headers.next().expect("User-Agent header must be present");
-        assert_eq!(ua.0.as_str(), "User-Agent");
+        assert_eq!(ua.0.as_str(), "user-agent");
         assert_eq!(ua.1.as_str(), "rust-testing");
 
         let foo = headers.next().expect("X-Foo-Bar header must be present");
-        assert_eq!(foo.0.as_str(), "X-Foo-Bar");
+        assert_eq!(foo.0.as_str(), "x-foo-bar");
         assert_eq!(foo.1.as_str(), "baz");
     }
 
@@ -343,15 +351,15 @@ mod tests {
         let auth = headers
             .next()
             .expect("Authorization header must be present");
-        assert_eq!(auth.0.as_str(), "Authorization");
+        assert_eq!(auth.0.as_str(), "authorization");
         assert_eq!(auth.1.as_str(), "token");
 
         let ua = headers.next().expect("User-Agent header must be present");
-        assert_eq!(ua.0.as_str(), "User-Agent");
+        assert_eq!(ua.0.as_str(), "user-agent");
         assert_eq!(ua.1.as_str(), "rust-testing");
 
         let foo = headers.next().expect("X-Foo-Bar header must be present");
-        assert_eq!(foo.0.as_str(), "X-Foo-Bar");
+        assert_eq!(foo.0.as_str(), "x-foo-bar");
         assert_eq!(foo.1.as_str(), "baz");
 
         assert_eq!(req.initial_body.len(), 91);
@@ -382,15 +390,82 @@ mod tests {
 
         let mut headers = req.headers.iter();
         let auth = headers.next().expect("Content type header must be present");
-        assert_eq!(auth.0.as_str(), "Content-Type");
+        assert_eq!(auth.0.as_str(), "content-type");
         assert_eq!(auth.1.as_str(), "application/json");
 
         let ua = headers
             .next()
             .expect("Content length header must be present");
-        assert_eq!(ua.0.as_str(), "Content-Length");
+        assert_eq!(ua.0.as_str(), "content-length");
         assert_eq!(ua.1.as_str(), "13");
 
         assert_eq!(req.initial_body.len(), 13);
+    }
+
+    #[test]
+    fn test_read_tunnel_response_with_body() {
+        let buffer = format!(
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "WEBHOOK/1.0 200 OK",
+            "",
+            "HTTP/1.1 200 OK",
+            "Content-Type: application/json",
+            "Content-Length: 13",
+            "",
+            "{\"foo\":\"bar\"}",
+        );
+
+        let buffer_bytes = buffer.as_bytes();
+        let res = TunnelResponse::from_buffer(buffer_bytes);
+        assert!(res.is_ok());
+
+        let res = res.expect("TunnelResponse must be created");
+
+        assert_eq!(res.response_line.version.as_str(), "WEBHOOK/1.0");
+        assert_eq!(res.response_line.status_code, 200);
+        assert_eq!(res.response_line.message.as_deref(), Some("OK"));
+
+        // No headers
+        assert_eq!(res.headers.len(), 0);
+
+        // Has body
+        assert_eq!(res.initial_body.len(), 13);
+    }
+
+    #[test]
+    fn test_read_http_response_with_body() {
+        let buffer = format!(
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "HTTP/1.1 200 OK",
+            "Content-Type: application/json",
+            "Content-Length: 13",
+            "",
+            "{\"foo\":\"bar\"}",
+        );
+
+        let buffer_bytes = buffer.as_bytes();
+        let res = TunnelResponse::from_buffer(buffer_bytes);
+        assert!(res.is_ok());
+
+        let res = res.expect("TunnelResponse must be created");
+
+        assert_eq!(res.response_line.version.as_str(), "HTTP/1.1");
+        assert_eq!(res.response_line.status_code, 200);
+        assert_eq!(res.response_line.message.as_deref(), Some("OK"));
+
+        assert_eq!(res.headers.len(), 2);
+
+        let mut headers = res.headers.iter();
+        let auth = headers.next().expect("Content type header must be present");
+        assert_eq!(auth.0.as_str(), "content-type");
+        assert_eq!(auth.1.as_str(), "application/json");
+
+        let ua = headers
+            .next()
+            .expect("Content length header must be present");
+        assert_eq!(ua.0.as_str(), "content-length");
+        assert_eq!(ua.1.as_str(), "13");
+
+        assert_eq!(res.initial_body.len(), 13);
     }
 }
