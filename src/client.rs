@@ -8,8 +8,10 @@ use tokio::{
 
 use tracing::{error, info};
 
+use crate::parser::ResponseLine;
 use crate::parser::StatusLine;
 use crate::parser::TunnelMessage;
+use crate::parser::WEBHOOK_OP_FORWARD_RES;
 use crate::parser::X_WEEB_HOOK_OP;
 use crate::parser::X_WEEB_HOOK_TOKEN;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
@@ -79,7 +81,7 @@ async fn handle_connection(
                 let res = TunnelMessage::from_buffer(&buffer[..n])?;
                 let handled_res = handle_server_response(crawler.clone(), config, res).await?;
                 if let Some(forward_res) = handled_res {
-                    if let Err(fwr_err) = stream.write_all(forward_res.as_bytes()).await {
+                    if let Err(fwr_err) = stream.write_all(&forward_res.into_bytes()).await {
                         let msg = format!("Unable to send back response: {}", fwr_err);
                         return Err(msg.into());
                     }
@@ -101,7 +103,7 @@ async fn handle_server_response(
     crawler: Client,
     config: &ClientConfig,
     message: TunnelMessage,
-) -> Result<Option<String>> {
+) -> Result<Option<TunnelMessage>> {
     if message.is_forward() {
         // Handle webhook requests
         let f_res = forward_request(crawler, config, message).await?;
@@ -126,7 +128,7 @@ async fn forward_request(
     crawler: Client,
     config: &ClientConfig,
     message: TunnelMessage,
-) -> Result<String> {
+) -> Result<TunnelMessage> {
     let st_opt = match message.status_line {
         StatusLine::Request(req) => Some(req),
         _ => None,
@@ -173,18 +175,30 @@ async fn forward_request(
     let response = r.send().await;
     match response {
         Ok(res) => {
-            // Build the whole response back into string
-            let status_line = format!("{:?} {}\r\n", res.version(), res.status());
-            let headers = res
+            // Build the whole response back into a TunnelMessage
+            let version = format!("{:?}", res.version());
+            let status_line = StatusLine::Response(ResponseLine::new(
+                version,
+                res.status().as_u16(),
+                Some(res.status().canonical_reason().unwrap().to_string()),
+            ));
+
+            let mut tunnel_res = TunnelMessage::new(status_line);
+            tunnel_res.headers = res
                 .headers()
                 .iter()
-                .map(|(k, v)| format!("{}: {}\r\n", k, v.to_str().unwrap()))
-                .collect::<String>();
+                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap().to_string()))
+                .collect();
 
-            let body = res.text().await.unwrap();
-            let full_response = format!("{}{}\r\n{}", status_line, headers, body);
+            // Mark this as a forward response
+            tunnel_res.headers.push((
+                X_WEEB_HOOK_OP.to_string(),
+                WEBHOOK_OP_FORWARD_RES.to_string(),
+            ));
 
-            Ok(full_response)
+            tunnel_res.initial_body = res.bytes().await.unwrap().to_vec();
+
+            Ok(tunnel_res)
         }
         Err(e) => {
             let msg = format!("Forward request error: {}", e);
