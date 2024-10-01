@@ -210,13 +210,12 @@ impl TunnelMessage {
                     break;
                 }
 
-                let parts: Vec<&str> = bufline.line.split(":").collect();
-                if parts.len() != 2 {
+                let Some((k, v)) = bufline.line.split_once(":") else {
                     return Err(Error::RequestHeaderInvalid);
-                }
+                };
 
                 // Simplify headers by forcing it be lowercase
-                headers.push((parts[0].to_lowercase(), parts[1].trim().to_string()));
+                headers.push((k.to_lowercase(), v.trim().to_string()));
 
                 match bufline.next_start {
                     Some(next) => {
@@ -391,7 +390,7 @@ mod tests {
             "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
             "FORWARD /webhook WEBHOOK/1.0",
             "Authorization: token",
-            "User-Agent: rust-testing",
+            "User-Agent: rust:testing",
             "X-Foo-Bar:baz",
             "",
             "POST /webhook HTTP/1.1",
@@ -427,7 +426,7 @@ mod tests {
 
         let ua = headers.next().expect("User-Agent header must be present");
         assert_eq!(ua.0.as_str(), "user-agent");
-        assert_eq!(ua.1.as_str(), "rust-testing");
+        assert_eq!(ua.1.as_str(), "rust:testing");
 
         let foo = headers.next().expect("X-Foo-Bar header must be present");
         assert_eq!(foo.0.as_str(), "x-foo-bar");

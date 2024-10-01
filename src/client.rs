@@ -21,6 +21,8 @@ pub async fn start_client(config: &ClientConfig) {
 
             thread::sleep(Duration::from_secs(10));
         }
+
+        info!("Going into a loop...");
     }
 }
 
@@ -62,29 +64,35 @@ async fn handle_connection(
 
     // Authentication exchange should fit in 4k buffer
     let mut buffer = [0; 4096];
-    match stream.read(&mut buffer).await {
-        Ok(0) => {
-            // No data to read, so we treat this as invalid connection
-            Err("No data received from server.".into())
-        }
-        Ok(n) => {
-            // We got filled, let's read it
-            let res = TunnelMessage::from_buffer(&buffer[..n])?;
-            let handled_res = handle_server_response(crawler.clone(), config, res).await?;
-            if let Some(forward_res) = handled_res {
-                if let Err(fwr_err) = stream.write_all(forward_res.as_bytes()).await {
-                    let msg = format!("Unable to send back response: {}", fwr_err);
-                    return Err(msg.into());
-                }
-            }
 
-            Ok(())
-        }
-        Err(e) => {
-            let msg = format!("Failed to read from server stream: {}", e);
-            Err(msg.into())
-        }
+    loop {
+        match stream.read(&mut buffer).await {
+            Ok(0) => {
+                // No data to read, so we treat this as invalid connection
+                info!("No data received from server.");
+                break;
+            }
+            Ok(n) => {
+                // We got filled, let's read it
+                let res = TunnelMessage::from_buffer(&buffer[..n])?;
+                let handled_res = handle_server_response(crawler.clone(), config, res).await?;
+                if let Some(forward_res) = handled_res {
+                    if let Err(fwr_err) = stream.write_all(forward_res.as_bytes()).await {
+                        let msg = format!("Unable to send back response: {}", fwr_err);
+                        return Err(msg.into());
+                    }
+                }
+
+                info!("Waiting for next message...");
+            }
+            Err(e) => {
+                let msg = format!("Failed to read from server stream: {}", e);
+                return Err(msg.into());
+            }
+        };
     }
+
+    Ok(())
 }
 
 async fn handle_server_response(
@@ -131,6 +139,8 @@ async fn handle_server_response(
 }
 
 async fn forward_request(crawler: Client, config: &ClientConfig, buffer: &[u8]) -> Result<String> {
+    let full_body = String::from_utf8_lossy(buffer).to_string();
+
     let message = TunnelMessage::from_buffer(buffer)?;
     let st_opt = match &message.status_line {
         StatusLine::HttpRequest(s) => Some(s),
