@@ -267,6 +267,33 @@ impl TunnelMessage {
         }
     }
 
+    pub fn is_http_request(&self) -> bool {
+        match &self.status_line {
+            StatusLine::HttpRequest(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_http_response(&self) -> bool {
+        match &self.status_line {
+            StatusLine::HttpResponse(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn http_response(&self) -> Option<TunnelMessage> {
+        if !self.is_tunnel_response() {
+            return None;
+        }
+
+        if self.initial_body.len() == 0 {
+            return None;
+        }
+
+        // Assumes body is HTTP response
+        Self::from_buffer(&self.initial_body).ok()
+    }
+
     pub fn into_bytes(&self) -> Vec<u8> {
         let mut buffer: Vec<u8> = Vec::new();
 
