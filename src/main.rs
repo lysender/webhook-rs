@@ -5,7 +5,7 @@ use std::{process, sync::Arc};
 mod client;
 mod config;
 mod error;
-mod parser;
+mod message;
 mod token;
 mod tunnel;
 mod utils;

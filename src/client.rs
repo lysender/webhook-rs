@@ -8,13 +8,13 @@ use tokio::time::timeout;
 
 use tracing::{error, info};
 
-use crate::parser::len_without_eof_marker;
-use crate::parser::ResponseLine;
-use crate::parser::StatusLine;
-use crate::parser::TunnelMessage;
-use crate::parser::WEBHOOK_OP_FORWARD_RES;
-use crate::parser::X_WEEB_HOOK_OP;
-use crate::parser::X_WEEB_HOOK_TOKEN;
+use crate::message::len_without_eof_marker;
+use crate::message::ResponseLine;
+use crate::message::StatusLine;
+use crate::message::TunnelMessage;
+use crate::message::WEBHOOK_OP_FORWARD_RES;
+use crate::message::X_WEEB_HOOK_OP;
+use crate::message::X_WEEB_HOOK_TOKEN;
 use crate::tunnel::TunnelClient;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 

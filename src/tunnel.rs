@@ -9,7 +9,7 @@ use tracing::{error, info};
 
 use crate::{
     config::ServerConfig,
-    parser::{len_without_eof_marker, TunnelMessage},
+    message::{len_without_eof_marker, TunnelMessage},
     Error,
 };
 use crate::{token::verify_auth_token, Result};

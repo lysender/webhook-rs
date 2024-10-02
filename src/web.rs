@@ -12,12 +12,12 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
 
 use crate::config::ServerConfig;
-use crate::parser::len_without_eof_marker;
-use crate::parser::RequestLine;
-use crate::parser::StatusLine;
-use crate::parser::TunnelMessage;
-use crate::parser::WEBHOOK_OP_FORWARD;
-use crate::parser::X_WEEB_HOOK_OP;
+use crate::message::len_without_eof_marker;
+use crate::message::RequestLine;
+use crate::message::StatusLine;
+use crate::message::TunnelMessage;
+use crate::message::WEBHOOK_OP_FORWARD;
+use crate::message::X_WEEB_HOOK_OP;
 use crate::tunnel::TunnelClient;
 use crate::Error;
 use crate::Result;
