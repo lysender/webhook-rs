@@ -155,7 +155,7 @@ async fn handle_messages(
             Ok(n) => {
                 if let Some(mut res) = tunnel_req.take() {
                     info!("Appending data to existing request.");
-                    let complete = res.accumulate_body(&buffer, n);
+                    let complete = res.accumulate_body(&buffer[..n]);
                     if complete {
                         let handled_res =
                             handle_server_response(crawler.clone(), config, res).await?;

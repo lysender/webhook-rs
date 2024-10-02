@@ -357,17 +357,16 @@ impl TunnelMessage {
     }
 
     /// Appends data from a buffer to the body, returns true if body hits EOF
-    pub fn accumulate_body(&mut self, buffer: &[u8], n: usize) -> bool {
-        let mut buflen = n;
-        let mut complete = false;
-        if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
-            buflen = adjusted_len;
-            complete = true;
+    pub fn accumulate_body(&mut self, buffer: &[u8]) -> bool {
+        // Just accept the entire buffer as body to detect cut off EOF marker
+        // Detect EOF marker from the entire body instead
+        self.initial_body.extend_from_slice(&buffer);
+        if let Some(len_eof) = len_without_eof_marker(&self.initial_body, self.initial_body.len()) {
+            self.initial_body.truncate(len_eof);
+            self.complete = true;
         }
-        self.initial_body.extend_from_slice(&buffer[..buflen]);
-        self.complete = complete;
 
-        complete
+        self.complete
     }
 
     /// Converts full message into bytes, adding EOF marker at the end
