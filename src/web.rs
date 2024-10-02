@@ -12,6 +12,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
 
 use crate::config::ServerConfig;
+use crate::parser::len_without_eof_marker;
 use crate::parser::RequestLine;
 use crate::parser::StatusLine;
 use crate::parser::TunnelMessage;
@@ -118,11 +119,11 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
             http_req.initial_body = body_bytes.to_vec();
         }
 
-        if let Err(write_err) = client.write(&http_req.into_bytes_with_eof()).await {
+        if let Err(write_err) = client.write(&http_req.into_bytes()).await {
             return handle_forward_error(Some(write_err));
         } else {
             // Read from client response
-            let mut buffer = [0; 1024];
+            let mut buffer = [0; 4096];
             let mut tunnel_res: Option<TunnelMessage> = None;
 
             loop {
@@ -130,36 +131,49 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
                 match client.read(&mut buffer).await {
                     Ok(0) => {
                         info!("Received 0 bytes.");
-
-                        // Fully read the response, let's process it
-                        if let Some(res) = tunnel_res.take() {
-                            return handle_forward_success(res);
-                        } else {
-                            return handle_forward_error(Some(Error::AnyError(
-                                "No response from connected client.".to_string(),
-                            )));
-                        }
+                        return handle_forward_error(Some(Error::AnyError(
+                            "No response from connected client.".to_string(),
+                        )));
                     }
                     Ok(n) => {
                         info!("Received {} bytes.", n);
                         if let Some(mut res) = tunnel_res.take() {
                             info!("Appending data to existing response.");
                             // Append data to existing body, assuming these are part of the data
-                            res.initial_body.extend_from_slice(&buffer[..n]);
-                            continue;
+                            let mut buflen = n;
+                            let mut complete = false;
+                            if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
+                                buflen = adjusted_len;
+                                complete = true;
+                            }
+                            res.initial_body.extend_from_slice(&buffer[..buflen]);
+
+                            if complete {
+                                break;
+                            }
                         } else {
                             // This is a fresh buffer, read headers
-                            let fresh_buffer = TunnelMessage::from_buffer(&buffer);
+                            let mut buflen = n;
+                            let mut complete = false;
+                            if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
+                                buflen = adjusted_len;
+                                complete = true;
+                            }
+
+                            let fresh_buffer = TunnelMessage::from_buffer(&buffer[..buflen]);
                             match fresh_buffer {
                                 Ok(res) => {
                                     tunnel_res = Some(res);
                                     info!("Received response from connected client.");
-                                    continue;
+
+                                    if complete {
+                                        break;
+                                    }
                                 }
                                 Err(e) => {
                                     return handle_forward_error(Some(e));
                                 }
-                            }
+                            };
                         }
                     }
                     Err(e) => {
@@ -167,6 +181,14 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
                         return handle_forward_error(Some(Error::AnyError(msg.to_string())));
                     }
                 };
+            }
+
+            if let Some(fw_res) = tunnel_res {
+                return handle_forward_success(fw_res);
+            } else {
+                return handle_forward_error(Some(Error::AnyError(
+                    "No response from connected client.".to_string(),
+                )));
             }
         }
     }

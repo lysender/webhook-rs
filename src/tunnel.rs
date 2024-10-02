@@ -10,7 +10,8 @@ use tracing::{error, info};
 use crate::{
     config::ServerConfig,
     parser::{
-        ResponseLine, StatusLine, TunnelMessage, TUNNEL_EOF, WEBHOOK_OP_AUTH_RES, X_WEEB_HOOK_OP,
+        len_without_eof_marker, ResponseLine, StatusLine, TunnelMessage, WEBHOOK_OP_AUTH_RES,
+        X_WEEB_HOOK_OP,
     },
     Error,
 };
@@ -175,14 +176,7 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
         Ok(0) => Err("Connection from client closed.".into()),
         Ok(n) => {
             // Strip off the EOF marker
-            let mut buflen = n;
-            if buffer.ends_with(&TUNNEL_EOF) {
-                let reduced_len = n - TUNNEL_EOF.len();
-                if reduced_len > 0 && reduced_len < n {
-                    buflen = reduced_len;
-                }
-            }
-
+            let buflen = len_without_eof_marker(&buffer, n).unwrap_or(n);
             let request = TunnelMessage::from_buffer(&buffer[..buflen])?;
             if !request.is_auth() {
                 return Err("Invalid tunnel auth request.".into());
@@ -203,7 +197,7 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
 
                 ok_msg.initial_body = "OK".as_bytes().to_vec();
 
-                if let Err(reply_err) = client.write(&ok_msg.into_bytes_with_eof()).await {
+                if let Err(reply_err) = client.write(&ok_msg.into_bytes()).await {
                     let msg = format!("Sending OK reply failed: {}", reply_err);
                     return Err(msg.into());
                 }
@@ -228,7 +222,7 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
 
                 err_msg.initial_body = "Unauthorized".as_bytes().to_vec();
 
-                if let Err(reply_err) = client.write(&err_msg.into_bytes_with_eof()).await {
+                if let Err(reply_err) = client.write(&err_msg.into_bytes()).await {
                     let msg = format!("Sending Unauthorized reply failed: {}", reply_err);
                     return Err(msg.into());
                 }

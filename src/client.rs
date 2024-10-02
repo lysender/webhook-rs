@@ -8,6 +8,7 @@ use tokio::{
 
 use tracing::{error, info};
 
+use crate::parser::len_without_eof_marker;
 use crate::parser::ResponseLine;
 use crate::parser::StatusLine;
 use crate::parser::TunnelMessage;
@@ -59,7 +60,7 @@ async fn handle_connection(
     // Before reading incoming messages, authenticate to the server first
     let token = create_auth_token(&config.jwt_secret)?;
     let auth_req = TunnelMessage::with_tunnel_auth(token);
-    let write_res = stream.write_all(&auth_req.into_bytes_with_eof()).await;
+    let write_res = stream.write_all(&auth_req.into_bytes()).await;
 
     if let Err(write_err) = write_res {
         let msg = format!("Authenticating to server failed: {}", write_err);
@@ -68,6 +69,7 @@ async fn handle_connection(
 
     // Authentication exchange should fit in 4k buffer
     let mut buffer = [0; 4096];
+    let mut tunnel_req: Option<TunnelMessage> = None;
 
     loop {
         match stream.read(&mut buffer).await {
@@ -77,14 +79,68 @@ async fn handle_connection(
                 break;
             }
             Ok(n) => {
-                // We got filled, let's read it
-                let res = TunnelMessage::from_buffer(&buffer[..n])?;
-                let handled_res = handle_server_response(crawler.clone(), config, res).await?;
-                if let Some(forward_res) = handled_res {
-                    if let Err(fwr_err) = stream.write_all(&forward_res.into_bytes()).await {
-                        let msg = format!("Unable to send back response: {}", fwr_err);
-                        return Err(msg.into());
+                if let Some(mut res) = tunnel_req.take() {
+                    info!("Appending data to existing request.");
+                    // Append data to existing body, assuming these are part of the data
+                    let mut buflen = n;
+                    let mut complete = false;
+                    if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
+                        buflen = adjusted_len;
+                        complete = true;
                     }
+                    res.initial_body.extend_from_slice(&buffer[..buflen]);
+
+                    if complete {
+                        let handled_res =
+                            handle_server_response(crawler.clone(), config, res).await?;
+                        if let Some(forward_res) = handled_res {
+                            if let Err(fwr_err) = stream.write_all(&forward_res.into_bytes()).await
+                            {
+                                let msg = format!("Unable to send back response: {}", fwr_err);
+                                return Err(msg.into());
+                            }
+                        }
+                        // Clear the current request
+                        tunnel_req = None;
+                    }
+                } else {
+                    // This is a fresh buffer, read headers
+                    let mut buflen = n;
+                    let mut complete = false;
+                    if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
+                        buflen = adjusted_len;
+                        complete = true;
+                    }
+
+                    let fresh_buffer = TunnelMessage::from_buffer(&buffer[..buflen]);
+                    match fresh_buffer {
+                        Ok(res) => {
+                            info!("Received response from connected client.");
+
+                            if complete {
+                                let handled_res =
+                                    handle_server_response(crawler.clone(), config, res).await?;
+                                if let Some(forward_res) = handled_res {
+                                    if let Err(fwr_err) =
+                                        stream.write_all(&forward_res.into_bytes()).await
+                                    {
+                                        let msg =
+                                            format!("Unable to send back response: {}", fwr_err);
+                                        return Err(msg.into());
+                                    }
+                                }
+                                // Clear the current request
+                                tunnel_req = None;
+                                break;
+                            } else {
+                                tunnel_req = Some(res);
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("Error reading back from connected client: {}", e);
+                            return Err(msg.into());
+                        }
+                    };
                 }
 
                 info!("Waiting for next message...");

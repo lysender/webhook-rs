@@ -268,19 +268,6 @@ impl TunnelMessage {
             return false;
         }
 
-        let valid_status = match &self.status_line {
-            StatusLine::Response(line) => {
-                line.version.as_str() == "HTTP/1.1"
-                    && line.status_code == 200
-                    && line.message.as_deref() == Some("OK")
-            }
-            _ => false,
-        };
-
-        if !valid_status {
-            return false;
-        }
-
         self.webhook_op()
             .map(|op| op == WEBHOOK_OP_AUTH_RES)
             .unwrap_or(false)
@@ -328,7 +315,8 @@ impl TunnelMessage {
             .map(|(_, v)| v.as_str())
     }
 
-    pub fn into_bytes_with_eof(&self) -> Vec<u8> {
+    /// Converts full message into bytes, adding EOF marker at the end
+    pub fn into_bytes(&self) -> Vec<u8> {
         let mut buffer: Vec<u8> = Vec::new();
 
         // Request line
@@ -351,7 +339,8 @@ impl TunnelMessage {
         buffer
     }
 
-    pub fn into_bytes(&self) -> Vec<u8> {
+    /// Converts full message into bytes without EOF marker
+    pub fn into_bytes_without_eof(&self) -> Vec<u8> {
         let mut buffer: Vec<u8> = Vec::new();
 
         // Request line
@@ -401,6 +390,18 @@ fn read_buffer_header(buffer: &[u8]) -> Option<BufferHeader> {
     })
 }
 
+pub fn len_without_eof_marker(buffer: &[u8], n: usize) -> Option<usize> {
+    let partial = &buffer[..n];
+    if partial.ends_with(TUNNEL_EOF) {
+        let reduced_len = n - TUNNEL_EOF.len();
+        if reduced_len > 0 && reduced_len < n {
+            return Some(reduced_len);
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,11 +431,11 @@ mod tests {
         assert!(res.is_some());
 
         let header = res.unwrap();
-        assert_eq!(header.data.len(), 37);
+        assert_eq!(header.data.len(), 42);
         assert!(header.body_start.is_some());
 
         let body_start = header.body_start.unwrap();
-        assert_eq!(body_start, 41);
+        assert_eq!(body_start, 46);
     }
 
     #[test]
@@ -519,5 +520,14 @@ mod tests {
         assert_eq!(ua.1.as_str(), "13");
 
         assert_eq!(res.initial_body.len(), 13);
+    }
+
+    #[test]
+    fn test_message_with_eof() {
+        let mut data = "FOO BAR BAZ\r\n".as_bytes().to_vec();
+        data.extend_from_slice(TUNNEL_EOF);
+
+        let buffer = data.as_slice();
+        assert!(buffer.ends_with(TUNNEL_EOF));
     }
 }
