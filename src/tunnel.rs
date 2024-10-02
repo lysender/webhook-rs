@@ -1,12 +1,13 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::Mutex,
+    time::timeout,
 };
 use tracing::{error, info};
 
-use crate::{config::ServerConfig, Error};
+use crate::{config::ServerConfig, message::TunnelMessage, Error};
 use crate::{token::verify_auth_token, Result};
 
 pub struct TunnelClient {
@@ -69,6 +70,24 @@ impl TunnelClient {
 
         Err("Write to client stream failed: no client connection yet.".into())
     }
+
+    pub async fn close(&mut self) -> Result<()> {
+        info!("Closing TCP connection from client.");
+
+        if let Some(stream) = self.stream.as_mut() {
+            if let Err(shutdown_err) = stream.shutdown().await {
+                // We really need to close the stream so we let the error pass
+                let msg = format!("Failed to shutdown client stream: {}", shutdown_err);
+                error!(msg);
+                self.stream = None;
+
+                return Err(msg.into());
+            }
+        }
+
+        self.stream = None;
+        Ok(())
+    }
 }
 
 pub async fn start_tunnel_server(
@@ -83,11 +102,12 @@ pub async fn start_tunnel_server(
     info!("Webhook tunnel server started at {}", address);
 
     loop {
+        info!("Waiting for incoming connections...");
+
         let tunnel_copy = tunnel.clone();
         let config_copy = arc_config.clone();
 
-        // We only allow one client at a time, so whenever we have a new connection,
-        // we just override the previous one.
+        // Will keep accepting new connections
         let res = listener.accept().await;
         match res {
             Ok((stream, addr)) => {
@@ -119,59 +139,81 @@ async fn handle_client(
     }
 
     // Wait for client to authenticate
+    match timeout(Duration::from_secs(5), handle_auth(config, tunnel.clone())).await {
+        Ok(res) => match res {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("Client authentication failed: {}", e);
+                error!("{}", msg);
+                let mut client = tunnel.lock().await;
+                let _ = client.close().await;
+                Err(msg.into())
+            }
+        },
+        Err(_) => {
+            let msg = "Client connection timeout";
+            error!("{}", msg);
+            let mut client = tunnel.lock().await;
+            let _ = client.close().await;
+            Err(msg.into())
+        }
+    }
+}
+
+async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
     let mut client = tunnel.lock().await;
 
-    // This should be enough to verify auth requests
+    // We don't need a large buffer nor need to read the whole stream
+    // as we will only process auth headers here and ignore other requests...
     let mut buffer = [0; 4096];
-    match client.read(&mut buffer).await {
-        Ok(0) => {
-            // Connection closed
-            info!("Connection from client closed.");
-            return Ok(());
-        }
-        Ok(n) => {
-            let message = String::from_utf8_lossy(&buffer[..n]).to_string();
 
-            if valid_auth(message.as_str(), &config.jwt_secret).is_ok() {
+    // At this point, we only expect the client to send an auth request
+    match client.read(&mut buffer).await {
+        Ok(0) => Err("Connection from client closed.".into()),
+        Ok(n) => {
+            // Strip off the EOF marker
+            let request = TunnelMessage::from_buffer(&buffer[..n])?;
+            if !request.is_auth() {
+                return Err("Invalid tunnel auth request.".into());
+            }
+
+            if valid_auth(&request, &config.jwt_secret).is_ok() {
                 // Send response to client
-                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 200 OK\r\n").await {
-                    error!("Sending OK reply failed: {}", reply_err);
-                    return Ok(());
-                } else {
-                    info!("Client authenticated successfully.");
-                    client.verify();
+                let ok_msg = TunnelMessage::with_auth_ok();
+
+                if let Err(reply_err) = client.write(&ok_msg.into_bytes()).await {
+                    let msg = format!("Sending OK reply failed: {}", reply_err);
+                    return Err(msg.into());
                 }
+
+                info!("Client authenticated successfully.");
+                client.verify();
+                return Ok(());
             } else {
-                info!("Client authentication failed.");
+                error!("Invalid authorization code.");
 
                 // Send auth failed error to client
-                if let Err(reply_err) = client.write(b"WEBHOOK/1.0 401 Unauthorized\r\n").await {
-                    error!("Sending Unauthorized reply failed: {}", reply_err);
-                    return Ok(());
+                let err_msg = TunnelMessage::with_auth_unauthorized();
+
+                if let Err(reply_err) = client.write(&err_msg.into_bytes()).await {
+                    let msg = format!("Sending Unauthorized reply failed: {}", reply_err);
+                    return Err(msg.into());
                 }
+
+                return Err("Invalid authorization code.".into());
             }
         }
         Err(e) => {
-            error!("Failed to read from client stream: {}", e);
-            return Ok(());
+            let msg = format!("Failed to read from client stream: {}", e);
+            Err(msg.into())
         }
     }
-
-    Ok(())
 }
 
-fn valid_auth(message: &str, secret: &str) -> Result<()> {
-    // We expect 2 lines of data, the header command and the token header
-    let lines: Vec<&str> = message.lines().collect();
-    if lines.len() != 2 {
-        return Err(Error::InvalidAuthToken);
+fn valid_auth(request: &TunnelMessage, secret: &str) -> Result<()> {
+    // Find the auth token
+    match request.webhook_token() {
+        Some(token) => verify_auth_token(token, secret),
+        None => Err(Error::InvalidAuthToken),
     }
-
-    if lines[0] == "AUTH /auth WEBHOOK/1.0" && lines[1].starts_with("Authorization: ") {
-        if let Some(token) = lines[1].split(' ').last() {
-            return verify_auth_token(token, secret);
-        }
-    }
-
-    Err(Error::InvalidAuthToken)
 }

@@ -16,6 +16,14 @@ pub enum Error {
     ConfigReadError(String),
     ConfigParseError(String),
     ConfigInvalidError(String),
+    TunnelMessageInvalid,
+    TunnelStatusLineInvalid,
+    RequestLineInvalid(String),
+    ResponseLineInvalid(String),
+    RequestHeaderTooLarge,
+    RequestHeaderInvalid,
+    ResponseHeaderTooLarge,
+    ResponseHeaderInvalid,
 }
 
 /// Allow string slices to be converted to Error
@@ -40,6 +48,14 @@ impl core::fmt::Display for Error {
             Self::ConfigReadError(val) => write!(f, "ConfigReadError: {}", val),
             Self::ConfigParseError(val) => write!(f, "ConfigParseError: {}", val),
             Self::ConfigInvalidError(val) => write!(f, "ConfigInvalidError: {}", val),
+            Self::TunnelMessageInvalid => write!(f, "Tunnel message malformed"),
+            Self::TunnelStatusLineInvalid => write!(f, "Tunnel status line malformed"),
+            Self::RequestLineInvalid(val) => write!(f, "RequestLineInvalid: {}", val),
+            Self::ResponseLineInvalid(val) => write!(f, "ResponseLineInvalid: {}", val),
+            Self::RequestHeaderTooLarge => write!(f, "Request header too large"),
+            Self::RequestHeaderInvalid => write!(f, "Request header malformed"),
+            Self::ResponseHeaderTooLarge => write!(f, "Response header too large"),
+            Self::ResponseHeaderInvalid => write!(f, "Response header malformed"),
         }
     }
 }

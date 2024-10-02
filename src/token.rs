@@ -11,7 +11,7 @@ struct Claims {
 }
 
 pub fn create_auth_token(secret: &str) -> Result<String> {
-    let exp = Utc::now() + Duration::seconds(60);
+    let exp = Utc::now() + Duration::seconds(10);
 
     let claims = Claims {
         sub: "AUTH".to_string(),
