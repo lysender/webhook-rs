@@ -4,7 +4,7 @@ const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
 // Added to the tunnel message body to indicate the end of the message
-pub const TUNNEL_EOF: &[u8] = b"<<[[((^_^))]]>>";
+const MSG_EOF: &[u8] = b"<<[[((^_^))]]>>";
 
 // Custom header names
 // Don't judge me
@@ -180,14 +180,17 @@ pub struct TunnelMessage {
     pub status_line: StatusLine,
     pub headers: Vec<HeaderItem>,
     pub initial_body: Vec<u8>,
+    pub complete: bool,
 }
 
 impl TunnelMessage {
     pub fn new(status_line: StatusLine) -> Self {
+        // Assumes new message is complete
         Self {
             status_line,
             headers: Vec::new(),
             initial_body: Vec::new(),
+            complete: true,
         }
     }
 
@@ -236,7 +239,15 @@ impl TunnelMessage {
 
     /// Parse the buffer for header data, include partial body if present
     pub fn from_buffer(buffer: &[u8]) -> Result<Self> {
-        let Some(header) = read_buffer_header(buffer) else {
+        let mut complete = false;
+        let mut buflen = buffer.len();
+
+        if let Some(len_without_eof) = len_without_eof_marker(buffer, buflen) {
+            buflen = len_without_eof;
+            complete = true;
+        }
+
+        let Some(header) = read_buffer_header(&buffer[..buflen]) else {
             return Err(Error::TunnelMessageInvalid);
         };
 
@@ -259,13 +270,14 @@ impl TunnelMessage {
         let mut initial_body: Vec<u8> = Vec::new();
         if let Some(b_start) = header.body_start {
             // Consume the rest of the content as body
-            initial_body.extend_from_slice(&buffer[b_start..]);
+            initial_body.extend_from_slice(&buffer[b_start..buflen]);
         }
 
         Ok(Self {
             status_line,
             headers,
             initial_body,
+            complete,
         })
     }
 
@@ -344,6 +356,20 @@ impl TunnelMessage {
             .map(|(_, v)| v.as_str())
     }
 
+    /// Appends data from a buffer to the body, returns true if body hits EOF
+    pub fn accumulate_body(&mut self, buffer: &[u8], n: usize) -> bool {
+        let mut buflen = n;
+        let mut complete = false;
+        if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
+            buflen = adjusted_len;
+            complete = true;
+        }
+        self.initial_body.extend_from_slice(&buffer[..buflen]);
+        self.complete = complete;
+
+        complete
+    }
+
     /// Converts full message into bytes, adding EOF marker at the end
     pub fn into_bytes(&self) -> Vec<u8> {
         let mut buffer: Vec<u8> = Vec::new();
@@ -363,7 +389,7 @@ impl TunnelMessage {
             buffer.extend_from_slice(&self.initial_body);
         }
 
-        buffer.extend_from_slice(TUNNEL_EOF);
+        buffer.extend_from_slice(MSG_EOF);
 
         buffer
     }
@@ -419,10 +445,10 @@ fn read_buffer_header(buffer: &[u8]) -> Option<BufferHeader> {
     })
 }
 
-pub fn len_without_eof_marker(buffer: &[u8], n: usize) -> Option<usize> {
+fn len_without_eof_marker(buffer: &[u8], n: usize) -> Option<usize> {
     let partial = &buffer[..n];
-    if partial.ends_with(TUNNEL_EOF) {
-        let reduced_len = n - TUNNEL_EOF.len();
+    if partial.ends_with(MSG_EOF) {
+        let reduced_len = n - MSG_EOF.len();
         if reduced_len > 0 && reduced_len < n {
             return Some(reduced_len);
         }
@@ -554,9 +580,9 @@ mod tests {
     #[test]
     fn test_message_with_eof() {
         let mut data = "FOO BAR BAZ\r\n".as_bytes().to_vec();
-        data.extend_from_slice(TUNNEL_EOF);
+        data.extend_from_slice(MSG_EOF);
 
         let buffer = data.as_slice();
-        assert!(buffer.ends_with(TUNNEL_EOF));
+        assert!(buffer.ends_with(MSG_EOF));
     }
 }

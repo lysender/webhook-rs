@@ -12,7 +12,6 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
 
 use crate::config::ServerConfig;
-use crate::message::len_without_eof_marker;
 use crate::message::RequestLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage;
@@ -88,112 +87,95 @@ async fn fallback_handler() -> Response<Body> {
 
 async fn webhook_handler(state: State<AppState>, request: Request) -> Response<Body> {
     let mut client = state.tunnel.lock().await;
-    if client.is_verified() {
-        let uri = request.uri().to_string();
-        let method = request.method().to_string();
+    if !client.is_verified() {
+        return handle_forward_error(None);
+    }
 
-        // Build original request
-        let http_st = StatusLine::Request(RequestLine::new(
-            method.clone(),
-            uri,
-            "HTTP/1.1".to_string(),
-        ));
-        let mut http_req = TunnelMessage::new(http_st);
+    let uri = request.uri().to_string();
+    let method = request.method().to_string();
 
-        // Add original headers
-        http_req.headers = request
-            .headers()
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
-            .collect();
+    // Build original request
+    let http_st = StatusLine::Request(RequestLine::new(
+        method.clone(),
+        uri,
+        "HTTP/1.1".to_string(),
+    ));
+    let mut http_req = TunnelMessage::new(http_st);
 
-        // Add custom headers for forwarding
-        http_req
-            .headers
-            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
+    // Add original headers
+    http_req.headers = request
+        .headers()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
+        .collect();
 
-        // Add original body if present
-        let with_body = vec!["POST", "PUT", "PATCH"];
-        if with_body.contains(&method.as_str()) {
-            let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
-            http_req.initial_body = body_bytes.to_vec();
-        }
+    // Add custom headers for forwarding
+    http_req
+        .headers
+        .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
 
-        if let Err(write_err) = client.write(&http_req.into_bytes()).await {
-            return handle_forward_error(Some(write_err));
-        } else {
-            // Read from client response
-            let mut buffer = [0; 4096];
-            let mut tunnel_res: Option<TunnelMessage> = None;
+    // Add original body if present
+    let with_body = vec!["POST", "PUT", "PATCH"];
+    if with_body.contains(&method.as_str()) {
+        let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
+        http_req.initial_body = body_bytes.to_vec();
+    }
 
-            loop {
-                info!("In the loop");
-                match client.read(&mut buffer).await {
-                    Ok(0) => {
-                        info!("Received 0 bytes.");
-                        return handle_forward_error(Some(Error::AnyError(
-                            "No response from connected client.".to_string(),
-                        )));
-                    }
-                    Ok(n) => {
-                        info!("Received {} bytes.", n);
-                        if let Some(mut res) = tunnel_res.take() {
-                            info!("Appending data to existing response.");
-                            // Append data to existing body, assuming these are part of the data
-                            let mut buflen = n;
-                            let mut complete = false;
-                            if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
-                                buflen = adjusted_len;
-                                complete = true;
-                            }
-                            res.initial_body.extend_from_slice(&buffer[..buflen]);
+    if let Err(write_err) = client.write(&http_req.into_bytes()).await {
+        return handle_forward_error(Some(write_err));
+    }
 
-                            if complete {
-                                break;
-                            }
-                        } else {
-                            // This is a fresh buffer, read headers
-                            let mut buflen = n;
-                            let mut complete = false;
-                            if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
-                                buflen = adjusted_len;
-                                complete = true;
-                            }
+    // Read from client response
+    let mut buffer = [0; 4096];
+    let mut tunnel_res: Option<TunnelMessage> = None;
 
-                            let fresh_buffer = TunnelMessage::from_buffer(&buffer[..buflen]);
-                            match fresh_buffer {
-                                Ok(res) => {
-                                    tunnel_res = Some(res);
-                                    info!("Received response from connected client.");
-
-                                    if complete {
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    return handle_forward_error(Some(e));
-                                }
-                            };
-                        }
-                    }
-                    Err(e) => {
-                        let msg = format!("Error reading back from connected client: {}", e);
-                        return handle_forward_error(Some(Error::AnyError(msg.to_string())));
-                    }
-                };
-            }
-
-            if let Some(fw_res) = tunnel_res {
-                return handle_forward_success(fw_res);
-            } else {
+    loop {
+        match client.read(&mut buffer).await {
+            Ok(0) => {
                 return handle_forward_error(Some(Error::AnyError(
                     "No response from connected client.".to_string(),
                 )));
             }
-        }
+            Ok(n) => {
+                if let Some(mut res) = tunnel_res.take() {
+                    info!("Appending data to existing response.");
+                    // Append data to existing body, assuming these are part of the data
+                    if res.accumulate_body(&buffer, n) {
+                        // Body complete, let's process the message
+                        break;
+                    }
+                } else {
+                    // This is a fresh buffer, read headers
+                    let fresh_buffer = TunnelMessage::from_buffer(&buffer[..n]);
+                    match fresh_buffer {
+                        Ok(res) => {
+                            let complete = res.complete;
+                            tunnel_res = Some(res);
+
+                            if complete {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            return handle_forward_error(Some(e));
+                        }
+                    };
+                }
+            }
+            Err(e) => {
+                let msg = format!("Error reading back from connected client: {}", e);
+                return handle_forward_error(Some(Error::AnyError(msg.to_string())));
+            }
+        };
     }
 
-    handle_forward_error(None)
+    if let Some(fw_res) = tunnel_res {
+        return handle_forward_success(fw_res);
+    } else {
+        return handle_forward_error(Some(Error::AnyError(
+            "No response from connected client.".to_string(),
+        )));
+    }
 }
 
 fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {

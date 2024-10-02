@@ -7,11 +7,7 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use crate::{
-    config::ServerConfig,
-    message::{len_without_eof_marker, TunnelMessage},
-    Error,
-};
+use crate::{config::ServerConfig, message::TunnelMessage, Error};
 use crate::{token::verify_auth_token, Result};
 
 pub struct TunnelClient {
@@ -176,8 +172,7 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
         Ok(0) => Err("Connection from client closed.".into()),
         Ok(n) => {
             // Strip off the EOF marker
-            let buflen = len_without_eof_marker(&buffer, n).unwrap_or(n);
-            let request = TunnelMessage::from_buffer(&buffer[..buflen])?;
+            let request = TunnelMessage::from_buffer(&buffer[..n])?;
             if !request.is_auth() {
                 return Err("Invalid tunnel auth request.".into());
             }

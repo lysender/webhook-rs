@@ -8,7 +8,6 @@ use tokio::time::timeout;
 
 use tracing::{error, info};
 
-use crate::message::len_without_eof_marker;
 use crate::message::ResponseLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage;
@@ -62,7 +61,7 @@ async fn handle_connection(
         client.verify();
     }
 
-    handle_forward_requests(tunnel, config, crawler).await
+    handle_messages(tunnel, config, crawler).await
 }
 
 async fn authenticate(tunnel: Arc<Mutex<TunnelClient>>, config: &ClientConfig) -> Result<()> {
@@ -114,8 +113,7 @@ async fn handle_auth_response(tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
         Ok(0) => Err("Connection from client closed.".into()),
         Ok(n) => {
             // Strip off the EOF marker
-            let buflen = len_without_eof_marker(&buffer, n).unwrap_or(n);
-            let request = TunnelMessage::from_buffer(&buffer[..buflen])?;
+            let request = TunnelMessage::from_buffer(&buffer[..n])?;
             if !request.is_auth_response() {
                 return Err("Invalid tunnel auth response.".into());
             }
@@ -134,7 +132,7 @@ async fn handle_auth_response(tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
     }
 }
 
-async fn handle_forward_requests(
+async fn handle_messages(
     tunnel: Arc<Mutex<TunnelClient>>,
     config: &ClientConfig,
     crawler: Client,
@@ -147,6 +145,7 @@ async fn handle_forward_requests(
     let mut tunnel_req: Option<TunnelMessage> = None;
 
     // Listen for all forward requests from the server
+    // This look should only break if there are errors
     loop {
         match client.read(&mut buffer).await {
             Ok(0) => {
@@ -156,15 +155,7 @@ async fn handle_forward_requests(
             Ok(n) => {
                 if let Some(mut res) = tunnel_req.take() {
                     info!("Appending data to existing request.");
-                    // Append data to existing body, assuming these are part of the data
-                    let mut buflen = n;
-                    let mut complete = false;
-                    if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
-                        buflen = adjusted_len;
-                        complete = true;
-                    }
-                    res.initial_body.extend_from_slice(&buffer[..buflen]);
-
+                    let complete = res.accumulate_body(&buffer, n);
                     if complete {
                         let handled_res =
                             handle_server_response(crawler.clone(), config, res).await?;
@@ -179,19 +170,10 @@ async fn handle_forward_requests(
                     }
                 } else {
                     // This is a fresh buffer, read headers
-                    let mut buflen = n;
-                    let mut complete = false;
-                    if let Some(adjusted_len) = len_without_eof_marker(&buffer, n) {
-                        buflen = adjusted_len;
-                        complete = true;
-                    }
-
-                    let fresh_buffer = TunnelMessage::from_buffer(&buffer[..buflen]);
+                    let fresh_buffer = TunnelMessage::from_buffer(&buffer[..n]);
                     match fresh_buffer {
                         Ok(res) => {
-                            info!("Received response from connected client.");
-
-                            if complete {
+                            if res.complete {
                                 let handled_res =
                                     handle_server_response(crawler.clone(), config, res).await?;
                                 if let Some(forward_res) = handled_res {
@@ -205,7 +187,6 @@ async fn handle_forward_requests(
                                 }
                                 // Clear the current request
                                 tunnel_req = None;
-                                break;
                             } else {
                                 tunnel_req = Some(res);
                             }
@@ -234,24 +215,14 @@ async fn handle_server_response(
     config: &ClientConfig,
     message: TunnelMessage,
 ) -> Result<Option<TunnelMessage>> {
+    // Ignore all other types of messages
     if message.is_forward() {
         // Handle webhook requests
         let f_res = forward_request(crawler, config, message).await?;
-        // Return the response from target app if there are any
         return Ok(Some(f_res));
-    } else if message.is_auth_response() {
-        if message.status_line.is_ok() {
-            info!("Authentication to server successful.");
-            return Ok(None);
-        } else {
-            error!("Authentication to server failed.");
-            return Err("Authentication to server failed.".into());
-        }
-    } else {
-        let msg = format!("Unsupported tunnel message");
-        error!(msg);
-        return Err(msg.into());
     }
+
+    Ok(None)
 }
 
 async fn forward_request(
@@ -263,12 +234,7 @@ async fn forward_request(
         StatusLine::Request(req) => Some(req),
         _ => None,
     };
-    let Some(st) = st_opt else {
-        let msg = format!("Invalid tunnel message");
-        error!(msg);
-        return Err(msg.into());
-    };
-
+    let st = st_opt.expect("Message must be a forward request.");
     let method = st.method.as_str();
     let uri = st.path.as_str();
 
@@ -291,7 +257,7 @@ async fn forward_request(
         }
 
         if k == "host" {
-            // Rename host
+            // Rename host to the proxied target host
             r = r.header("host", &config.target_host);
         } else {
             r = r.header(k, v);
