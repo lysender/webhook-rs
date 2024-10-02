@@ -20,8 +20,8 @@ pub struct ServerConfig {
 #[derive(Clone, Deserialize)]
 pub struct ClientConfig {
     pub tunnel_address: String,
-    pub target_host: String,
-    pub target_port: u16,
+    pub target_address: String,
+    pub target_secure: bool,
     pub jwt_secret: String,
 }
 
@@ -45,10 +45,14 @@ impl ServerConfig {
             ));
         }
 
-        if !valid_webhook_path(config.webhook_path.as_str()) {
-            return Err(Error::ConfigInvalidError(
-                "Webhook path must be in this format: /foo-bar".to_string(),
-            ));
+        // Allow either "*" or "/foo-bar" format
+        let wh_path = config.webhook_path.as_str();
+        if wh_path != "*" {
+            if !valid_webhook_path(wh_path) {
+                return Err(Error::ConfigInvalidError(
+                    "Webhook path must be in this format: /foo-bar".to_string(),
+                ));
+            }
         }
 
         if config.jwt_secret.len() == 0 {
@@ -81,7 +85,7 @@ impl ClientConfig {
             ));
         }
 
-        if config.target_host.len() == 0 {
+        if config.target_address.len() == 0 {
             return Err(Error::ConfigInvalidError(
                 "Target application host must not be empty.".to_string(),
             ));

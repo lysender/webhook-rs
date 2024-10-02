@@ -41,24 +41,40 @@ pub async fn start_web_server(
         config: arc_config,
     };
 
-    let routes = Router::new()
-        .route("/", get(index_handler))
-        .route(
-            webhook_path.as_str(),
-            get(webhook_handler)
-                .post(webhook_handler)
-                .put(webhook_handler)
-                .patch(webhook_handler),
-        )
-        .fallback(fallback_handler)
-        .with_state(state)
-        .layer(
-            ServiceBuilder::new().layer(
-                TraceLayer::new_for_http()
-                    .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
-                    .on_response(DefaultOnResponse::new().level(Level::INFO)),
-            ),
-        );
+    let wh_path = webhook_path.as_str();
+    let routes = if wh_path == "*" {
+        // Website mode
+        Router::new()
+            .fallback(webhook_handler)
+            .with_state(state)
+            .layer(
+                ServiceBuilder::new().layer(
+                    TraceLayer::new_for_http()
+                        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
+                ),
+            )
+    } else {
+        // Regular webhook mode
+        Router::new()
+            .route("/", get(index_handler))
+            .route(
+                webhook_path.as_str(),
+                get(webhook_handler)
+                    .post(webhook_handler)
+                    .put(webhook_handler)
+                    .patch(webhook_handler),
+            )
+            .fallback(fallback_handler)
+            .with_state(state)
+            .layer(
+                ServiceBuilder::new().layer(
+                    TraceLayer::new_for_http()
+                        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
+                ),
+            )
+    };
 
     // Setup the server
     info!("HTTP server started at {}", web_address);

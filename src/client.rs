@@ -242,10 +242,11 @@ async fn forward_request(
 
     // Figure out the method
     // We assume that the target is a localhost address
-    let url = format!(
-        "http://{}:{}{}",
-        &config.target_host, &config.target_port, uri
-    );
+    let protocol = match config.target_secure {
+        true => "https",
+        false => "http",
+    };
+    let url = format!("{}://{}{}", protocol, &config.target_address, uri);
 
     let mut r = crawler.request(ReqwestMethod::from_bytes(method.as_bytes()).unwrap(), url);
 
@@ -258,7 +259,7 @@ async fn forward_request(
 
         if k == "host" {
             // Rename host to the proxied target host
-            r = r.header("host", &config.target_host);
+            r = r.header("host", &config.target_address);
         } else {
             r = r.header(k, v);
         }
