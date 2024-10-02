@@ -1,4 +1,4 @@
 tunnel_address = "127.0.0.1:9001"
-target_host = "127.0.0.1"
-target_port = 4200
+target_address = "127.0.0.1:4200"
+target_secure = false 
 jwt_secret = "secret"

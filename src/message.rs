@@ -324,16 +324,6 @@ impl TunnelMessage {
             .unwrap_or(false)
     }
 
-    pub fn is_forward_response(&self) -> bool {
-        if !self.is_response() {
-            return false;
-        }
-
-        self.webhook_op()
-            .map(|op| op == WEBHOOK_OP_FORWARD_RES)
-            .unwrap_or(false)
-    }
-
     pub fn is_request(&self) -> bool {
         self.status_line.is_request()
     }
@@ -389,28 +379,6 @@ impl TunnelMessage {
         }
 
         buffer.extend_from_slice(MSG_EOF);
-
-        buffer
-    }
-
-    /// Converts full message into bytes without EOF marker
-    pub fn into_bytes_without_eof(&self) -> Vec<u8> {
-        let mut buffer: Vec<u8> = Vec::new();
-
-        // Request line
-        buffer.extend_from_slice(&self.status_line.into_bytes());
-
-        // Headers
-        for (k, v) in self.headers.iter() {
-            let header_line = format!("{}: {}\r\n", k, v);
-            buffer.extend_from_slice(&header_line.as_bytes());
-        }
-
-        // If there is a body, insert a blank line then the body
-        if self.initial_body.len() > 0 {
-            buffer.extend_from_slice(b"\r\n");
-            buffer.extend_from_slice(&self.initial_body);
-        }
 
         buffer
     }
