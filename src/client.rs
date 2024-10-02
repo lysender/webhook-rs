@@ -1,6 +1,9 @@
 use reqwest::Client;
 use reqwest::Method as ReqwestMethod;
+use std::sync::Arc;
 use std::{thread, time::Duration};
+use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -15,12 +18,13 @@ use crate::parser::TunnelMessage;
 use crate::parser::WEBHOOK_OP_FORWARD_RES;
 use crate::parser::X_WEEB_HOOK_OP;
 use crate::parser::X_WEEB_HOOK_TOKEN;
+use crate::tunnel::TunnelClient;
+use crate::Error;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(config: &ClientConfig) {
     loop {
-        let conn = connect(&config).await;
-        if let Err(e) = conn {
+        if let Err(e) = connect(&config).await {
             error!("Connection error: {}", e);
             info!("Reconnecting in 10 seconds...");
 
@@ -38,10 +42,7 @@ async fn connect(config: &ClientConfig) -> Result<()> {
     match stream_res {
         Ok(stream) => {
             info!("Connected to server...");
-            if let Err(conn_err) = handle_connection(crawler, config, stream).await {
-                return Err(conn_err);
-            }
-            Ok(())
+            handle_connection(crawler, config, stream).await
         }
         Err(e) => {
             let connect_err = format!("Error connecting to the server: {}", e);
@@ -53,28 +54,100 @@ async fn connect(config: &ClientConfig) -> Result<()> {
 async fn handle_connection(
     crawler: Client,
     config: &ClientConfig,
-    mut stream: TcpStream,
+    stream: TcpStream,
 ) -> Result<()> {
     info!("Authenticating to server...");
 
-    // Before reading incoming messages, authenticate to the server first
+    let tunnel = Arc::new(Mutex::new(TunnelClient::with_stream(stream)));
+    let _ = authenticate(tunnel.clone(), config).await?;
+
+    {
+        let mut client = tunnel.lock().await;
+        client.verify();
+    }
+
+    handle_forward_requests(tunnel, config, crawler).await
+}
+
+async fn authenticate(tunnel: Arc<Mutex<TunnelClient>>, config: &ClientConfig) -> Result<()> {
     let token = create_auth_token(&config.jwt_secret)?;
-    let auth_req = TunnelMessage::with_tunnel_auth(token);
-    let write_res = stream.write_all(&auth_req.into_bytes()).await;
+    let auth_req = TunnelMessage::with_auth_token(token);
+
+    let mut client = tunnel.lock().await;
+    let write_res = client.write(&auth_req.into_bytes()).await;
 
     if let Err(write_err) = write_res {
         let msg = format!("Authenticating to server failed: {}", write_err);
         return Err(msg.into());
     }
 
+    // Wait for server to respond to auth request
+    match timeout(Duration::from_secs(5), handle_auth_response(tunnel.clone())).await {
+        Ok(res) => match res {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = format!("Authentication to server failed: {}", e);
+                error!("{}", msg);
+                let mut client = tunnel.lock().await;
+                let _ = client.close().await;
+                Err(msg.into())
+            }
+        },
+        Err(_) => {
+            let msg = "Server connection timeout";
+            error!("{}", msg);
+            let mut client = tunnel.lock().await;
+            let _ = client.close().await;
+            Err(msg.into())
+        }
+    }
+}
+
+async fn handle_auth_response(tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
+    let mut client = tunnel.lock().await;
+
     // Authentication exchange should fit in 4k buffer
+    // No need to accumulate the whole stream message
     let mut buffer = [0; 4096];
+
+    match client.read(&mut buffer).await {
+        Ok(0) => Err("Connection from client closed.".into()),
+        Ok(n) => {
+            // Strip off the EOF marker
+            let buflen = len_without_eof_marker(&buffer, n).unwrap_or(n);
+            let request = TunnelMessage::from_buffer(&buffer[..buflen])?;
+            if !request.is_auth_response() {
+                return Err("Invalid tunnel auth response.".into());
+            }
+
+            if request.status_line.is_ok() {
+                return Ok(());
+            }
+            Err("Authentication to server failed.".into())
+        }
+        Err(e) => {
+            let msg = format!("Failed to read from client stream: {}", e);
+            Err(msg.into())
+        }
+    }
+}
+
+async fn handle_forward_requests(
+    tunnel: Arc<Mutex<TunnelClient>>,
+    config: &ClientConfig,
+    crawler: Client,
+) -> Result<()> {
+    let mut client = tunnel.lock().await;
+
+    let mut buffer = [0; 4096];
+
+    // Accumulate stream data by looping over incoming message parts
     let mut tunnel_req: Option<TunnelMessage> = None;
 
+    // Listen for all forward requests from the server
     loop {
-        match stream.read(&mut buffer).await {
+        match client.read(&mut buffer).await {
             Ok(0) => {
-                // No data to read, so we treat this as invalid connection
                 info!("No data received from server.");
                 break;
             }
@@ -94,8 +167,7 @@ async fn handle_connection(
                         let handled_res =
                             handle_server_response(crawler.clone(), config, res).await?;
                         if let Some(forward_res) = handled_res {
-                            if let Err(fwr_err) = stream.write_all(&forward_res.into_bytes()).await
-                            {
+                            if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
                                 let msg = format!("Unable to send back response: {}", fwr_err);
                                 return Err(msg.into());
                             }
@@ -122,7 +194,7 @@ async fn handle_connection(
                                     handle_server_response(crawler.clone(), config, res).await?;
                                 if let Some(forward_res) = handled_res {
                                     if let Err(fwr_err) =
-                                        stream.write_all(&forward_res.into_bytes()).await
+                                        client.write(&forward_res.into_bytes()).await
                                     {
                                         let msg =
                                             format!("Unable to send back response: {}", fwr_err);
@@ -149,7 +221,7 @@ async fn handle_connection(
                 let msg = format!("Failed to read from server stream: {}", e);
                 return Err(msg.into());
             }
-        };
+        }
     }
 
     Ok(())

@@ -191,7 +191,8 @@ impl TunnelMessage {
         }
     }
 
-    pub fn with_tunnel_auth(token: String) -> Self {
+    /// Creates an auth request message
+    pub fn with_auth_token(token: String) -> Self {
         let st = StatusLine::Request(RequestLine::new(
             "POST".to_string(),
             "/_x_weeb_hook_auth".to_string(),
@@ -203,6 +204,34 @@ impl TunnelMessage {
             .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH.to_string()));
         req.headers.push((X_WEEB_HOOK_TOKEN.to_string(), token));
         req
+    }
+
+    pub fn with_auth_ok() -> Self {
+        let st = StatusLine::Response(ResponseLine::new(
+            "HTTP/1.1".to_string(),
+            200,
+            Some("OK".to_string()),
+        ));
+
+        let mut res = Self::new(st);
+        res.headers
+            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
+        res.initial_body = "OK".as_bytes().to_vec();
+        res
+    }
+
+    pub fn with_auth_unauthorized() -> Self {
+        let st = StatusLine::Response(ResponseLine::new(
+            "HTTP/1.1".to_string(),
+            401,
+            Some("Unauthorized".to_string()),
+        ));
+
+        let mut res = Self::new(st);
+        res.headers
+            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
+        res.initial_body = "Unauthorized".as_bytes().to_vec();
+        res
     }
 
     /// Parse the buffer for header data, include partial body if present
