@@ -2,12 +2,9 @@ use reqwest::Client;
 use reqwest::Method as ReqwestMethod;
 use std::sync::Arc;
 use std::{thread, time::Duration};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
-};
 
 use tracing::{error, info};
 
@@ -19,7 +16,6 @@ use crate::parser::WEBHOOK_OP_FORWARD_RES;
 use crate::parser::X_WEEB_HOOK_OP;
 use crate::parser::X_WEEB_HOOK_TOKEN;
 use crate::tunnel::TunnelClient;
-use crate::Error;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(config: &ClientConfig) {
@@ -73,12 +69,14 @@ async fn authenticate(tunnel: Arc<Mutex<TunnelClient>>, config: &ClientConfig) -
     let token = create_auth_token(&config.jwt_secret)?;
     let auth_req = TunnelMessage::with_auth_token(token);
 
-    let mut client = tunnel.lock().await;
-    let write_res = client.write(&auth_req.into_bytes()).await;
+    {
+        let mut client = tunnel.lock().await;
+        let write_res = client.write(&auth_req.into_bytes()).await;
 
-    if let Err(write_err) = write_res {
-        let msg = format!("Authenticating to server failed: {}", write_err);
-        return Err(msg.into());
+        if let Err(write_err) = write_res {
+            let msg = format!("Authenticating to server failed: {}", write_err);
+            return Err(msg.into());
+        }
     }
 
     // Wait for server to respond to auth request
@@ -110,6 +108,8 @@ async fn handle_auth_response(tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
     // No need to accumulate the whole stream message
     let mut buffer = [0; 4096];
 
+    info!("Waiting for server response...");
+
     match client.read(&mut buffer).await {
         Ok(0) => Err("Connection from client closed.".into()),
         Ok(n) => {
@@ -121,12 +121,14 @@ async fn handle_auth_response(tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
             }
 
             if request.status_line.is_ok() {
+                info!("Authentication to server successful.");
                 return Ok(());
             }
             Err("Authentication to server failed.".into())
         }
         Err(e) => {
             let msg = format!("Failed to read from client stream: {}", e);
+            error!("{}", msg);
             Err(msg.into())
         }
     }
