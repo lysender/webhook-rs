@@ -167,6 +167,9 @@ async fn handle_messages(
                         }
                         // Clear the current request
                         tunnel_req = None;
+                    } else {
+                        // Continue accumulating
+                        tunnel_req = Some(res);
                     }
                 } else {
                     // This is a fresh buffer, read headers

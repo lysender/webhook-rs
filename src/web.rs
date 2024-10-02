@@ -144,7 +144,11 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
                     // Append data to existing body, assuming these are part of the data
                     if res.accumulate_body(&buffer[..n]) {
                         // Body complete, let's process the message
+                        tunnel_res = Some(res);
                         break;
+                    } else {
+                        // Continue accumulating body
+                        tunnel_res = Some(res);
                     }
                 } else {
                     // This is a fresh buffer, read headers
