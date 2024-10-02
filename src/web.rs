@@ -126,12 +126,10 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     }
 
     // Read from client response
-    let mut buffer = [0; 4096];
+    let mut buffer = [0; 8192];
     let mut tunnel_res: Option<TunnelMessage> = None;
 
     loop {
-        info!("Waiting for tunnel response, looping...");
-
         match client.read(&mut buffer).await {
             Ok(0) => {
                 return handle_forward_error(Some(Error::AnyError(
@@ -140,7 +138,6 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
             }
             Ok(n) => {
                 if let Some(mut res) = tunnel_res.take() {
-                    info!("Appending data to existing response.");
                     // Append data to existing body, assuming these are part of the data
                     if res.accumulate_body(&buffer[..n]) {
                         // Body complete, let's process the message

@@ -139,7 +139,7 @@ async fn handle_messages(
 ) -> Result<()> {
     let mut client = tunnel.lock().await;
 
-    let mut buffer = [0; 4096];
+    let mut buffer = [0; 8192];
 
     // Accumulate stream data by looping over incoming message parts
     let mut tunnel_req: Option<TunnelMessage> = None;
@@ -154,7 +154,6 @@ async fn handle_messages(
             }
             Ok(n) => {
                 if let Some(mut res) = tunnel_req.take() {
-                    info!("Appending data to existing request.");
                     let complete = res.accumulate_body(&buffer[..n]);
                     if complete {
                         let handled_res =
@@ -200,8 +199,6 @@ async fn handle_messages(
                         }
                     };
                 }
-
-                info!("Waiting for next message...");
             }
             Err(e) => {
                 let msg = format!("Failed to read from server stream: {}", e);
