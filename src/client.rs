@@ -155,6 +155,7 @@ async fn handle_requests(
     tunnel: Arc<Mutex<TunnelClient>>,
     req_queue: Arc<MessageQueue>,
 ) -> Result<()> {
+    let mut client = tunnel.lock().await;
     let mut buffer = [0; 8192];
 
     // Accumulate stream data by looping over incoming message parts
@@ -164,10 +165,7 @@ async fn handle_requests(
     // This look should only break if there are errors
     loop {
         println!("Waiting for messages from server...");
-        let read_res = {
-            let mut client = tunnel.lock().await;
-            client.read(&mut buffer).await
-        };
+        let read_res = client.read(&mut buffer).await;
 
         match read_res {
             Ok(0) => {
@@ -178,8 +176,7 @@ async fn handle_requests(
                 if let Some(mut res) = tunnel_req.take() {
                     let complete = res.accumulate_body(&buffer[..n]);
                     if complete {
-                        let rq = req_queue.clone();
-                        rq.push(res).await;
+                        req_queue.push(res).await;
 
                         // Clear the current request
                         tunnel_req = None;
@@ -193,8 +190,7 @@ async fn handle_requests(
                     match fresh_buffer {
                         Ok(res) => {
                             if res.complete {
-                                let rq = req_queue.clone();
-                                rq.push(res).await;
+                                req_queue.push(res).await;
 
                                 // Clear the current request
                                 tunnel_req = None;
@@ -227,20 +223,21 @@ async fn handle_forwards(
 ) -> Result<()> {
     loop {
         println!("Waiting for forward messages from queue...");
-        let maybe_req = {
-            let rq = req_queue.clone();
-            rq.pop().await
-        };
+        let maybe_req = req_queue.pop().await;
 
         if let Some(req) = maybe_req {
             println!("Got some forward request from queue...");
             let res = handle_server_response(crawler.clone(), config, req).await?;
             if let Some(forward_res) = res {
-                let mut client = tunnel.lock().await;
+                println!("Sending back response to server...");
+                let tunnel_clone = tunnel.clone();
+                let mut client = tunnel_clone.lock().await;
                 if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
                     let msg = format!("Unable to send back response: {}", fwr_err);
                     return Err(msg.into());
                 }
+            } else {
+                println!("No response to forward...");
             }
         }
     }
@@ -310,6 +307,7 @@ async fn forward_request(
     let response = r.send().await;
     match response {
         Ok(res) => {
+            println!("Got response from target...");
             // Build the whole response back into a TunnelMessage
             let version = format!("{:?}", res.version());
             let status_line = StatusLine::Response(ResponseLine::new(
@@ -332,6 +330,8 @@ async fn forward_request(
                 .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_FORWARD_RES.to_string()));
 
             tunnel_res.initial_body = res.bytes().await.unwrap().to_vec();
+
+            println!("returning after capturing the response");
 
             Ok(tunnel_res)
         }

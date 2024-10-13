@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use tokio::sync::{Mutex, Notify};
 
@@ -21,20 +21,25 @@ impl MessageQueue {
         {
             let mut messages = self.messages.lock().await;
             messages.push_back(message);
+            println!("Messages after push: {}", messages.len());
         }
-        self.notify.notify_one();
+        self.notify.notify_waiters();
     }
 
     pub async fn pop(&self) -> Option<TunnelMessage> {
         let maybe_message = {
             let mut messages = self.messages.lock().await;
-            messages.pop_front()
+            let msg = messages.pop_front();
+
+            println!("Messages after pop: {}", messages.len());
+            msg
         };
 
         match maybe_message {
             Some(message) => Some(message),
             None => {
                 self.notify.notified().await;
+                println!("Notified, trying to pop again.");
                 None
             }
         }
