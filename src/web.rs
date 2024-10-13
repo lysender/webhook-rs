@@ -103,11 +103,6 @@ async fn fallback_handler() -> Response<Body> {
 }
 
 async fn webhook_handler(state: State<AppState>, request: Request) -> Response<Body> {
-    let mut client = state.tunnel.lock().await;
-    if !client.is_verified() {
-        return handle_forward_error(None);
-    }
-
     let uri = request.uri().to_string();
     let method = request.method().to_string();
 
@@ -133,13 +128,16 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
         .headers
         .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
 
-    println!("Request headers: {:?}", http_req.headers);
-
     // Add original body if present
     let with_body = vec!["POST", "PUT", "PATCH"];
     if with_body.contains(&method.as_str()) {
         let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
         http_req.initial_body = body_bytes.to_vec();
+    }
+
+    let mut client = state.tunnel.lock().await;
+    if !client.is_verified() {
+        return handle_forward_error(None);
     }
 
     if let Err(write_err) = client.write(&http_req.into_bytes()).await {
@@ -151,13 +149,17 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     let mut tunnel_res: Option<TunnelMessage> = None;
 
     loop {
-        match client.read(&mut buffer).await {
+        let read_res = client.read(&mut buffer).await;
+        match read_res {
             Ok(0) => {
+                println!("No response from proxy client.");
                 return handle_forward_error(Some(Error::AnyError(
                     "No response from connected client.".to_string(),
                 )));
             }
             Ok(n) => {
+                println!("Read {} bytes from proxy client.", n);
+
                 if let Some(mut res) = tunnel_res.take() {
                     // Append data to existing body, assuming these are part of the data
                     if res.accumulate_body(&buffer[..n]) {

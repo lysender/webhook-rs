@@ -21,7 +21,6 @@ impl MessageQueue {
         {
             let mut messages = self.messages.lock().await;
             messages.push_back(message);
-            // println!("Pushed message into queue: {}", message);
         }
         self.notify.notify_one();
     }
@@ -32,10 +31,12 @@ impl MessageQueue {
             messages.pop_front()
         };
 
-        if maybe_message.is_none() {
-            self.notify.notified().await;
+        match maybe_message {
+            Some(message) => Some(message),
+            None => {
+                self.notify.notified().await;
+                None
+            }
         }
-
-        maybe_message
     }
 }

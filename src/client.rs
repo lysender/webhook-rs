@@ -77,7 +77,7 @@ async fn handle_connection(
             async move { handle_forwards(tunnel, req_queue, &config_clone, crawler).await },
         );
 
-    let _ = tokio::join!(req_task, forward_task);
+    let _ = tokio::try_join!(req_task, forward_task);
 
     Ok(())
 }
