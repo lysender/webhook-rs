@@ -7,7 +7,6 @@ mod client;
 mod config;
 mod error;
 mod message;
-mod notify;
 mod queue;
 mod token;
 mod tunnel;
@@ -15,12 +14,10 @@ mod utils;
 mod web;
 
 use config::{AppArgs, ClientConfig, Commands, ServerConfig, RUST_LOG};
-use tunnel::TunnelClient;
 
 // Re-exports
 pub use error::{Error, Result};
 
-use tokio::sync::Mutex;
 use tracing::error;
 use tunnel::start_tunnel_server;
 use web::start_web_server;
@@ -55,11 +52,13 @@ async fn run_command(args: AppArgs) -> Result<()> {
 async fn run_server(args: &AppArgs) -> Result<()> {
     let config = ServerConfig::build(args.config.as_path())?;
     let arc_config = Arc::new(config);
-    let client = Arc::new(Mutex::new(TunnelClient::new()));
+
+    let req_queue = Arc::new(MessageQueue::new());
+    let res_map = Arc::new(MessageMap::new());
 
     let res = tokio::try_join!(
-        start_tunnel_server(client.clone(), arc_config.clone()),
-        start_web_server(client, arc_config)
+        start_tunnel_server(arc_config.clone(), req_queue.clone(), res_map.clone()),
+        start_web_server(arc_config, req_queue, res_map)
     );
 
     if let Err(e) = res {

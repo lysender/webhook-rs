@@ -6,7 +6,6 @@ use axum::routing::get;
 use axum::Router;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
@@ -18,28 +17,31 @@ use crate::message::StatusLine;
 use crate::message::TunnelMessage;
 use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD;
-use crate::tunnel::TunnelClient;
+use crate::queue::MessageMap;
+use crate::queue::MessageQueue;
 use crate::Error;
 use crate::Result;
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
-    tunnel: Arc<Mutex<TunnelClient>>,
     config: Arc<ServerConfig>,
+    req_queue: Arc<MessageQueue>,
+    res_map: Arc<MessageMap>,
 }
 
 pub async fn start_web_server(
-    tunnel: Arc<Mutex<TunnelClient>>,
     config: Arc<ServerConfig>,
+    req_queue: Arc<MessageQueue>,
+    res_map: Arc<MessageMap>,
 ) -> Result<()> {
-    let arc_tunnel = tunnel.clone();
     let arc_config = config.clone();
     let web_address = arc_config.web_address.clone();
     let webhook_path = arc_config.webhook_path.clone();
 
     let state = AppState {
-        tunnel: arc_tunnel,
         config: arc_config,
+        req_queue: req_queue.clone(),
+        res_map: res_map.clone(),
     };
 
     let wh_path = webhook_path.as_str();
@@ -135,72 +137,17 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
         http_req.initial_body = body_bytes.to_vec();
     }
 
-    let mut client = state.tunnel.lock().await;
-    if !client.is_verified() {
-        return handle_forward_error(None);
-    }
+    // Push the request to the queue
+    let queue = state.req_queue.clone();
+    queue.push(http_req).await;
 
-    if let Err(write_err) = client.write(&http_req.into_bytes()).await {
-        return handle_forward_error(Some(write_err));
-    }
+    // Wait for response to arrive
+    let map = state.res_map.clone();
+    let tunnel_res = map.get(&id.as_u128()).await;
 
-    // Read from client response
-    let mut buffer = [0; 8192];
-    let mut tunnel_res: Option<TunnelMessage> = None;
-
-    loop {
-        let read_res = client.read(&mut buffer).await;
-        match read_res {
-            Ok(0) => {
-                println!("No response from proxy client.");
-                return handle_forward_error(Some(Error::AnyError(
-                    "No response from connected client.".to_string(),
-                )));
-            }
-            Ok(n) => {
-                println!("Read {} bytes from proxy client.", n);
-
-                if let Some(mut res) = tunnel_res.take() {
-                    // Append data to existing body, assuming these are part of the data
-                    if res.accumulate_body(&buffer[..n]) {
-                        // Body complete, let's process the message
-                        tunnel_res = Some(res);
-                        break;
-                    } else {
-                        // Continue accumulating body
-                        tunnel_res = Some(res);
-                    }
-                } else {
-                    // This is a fresh buffer, read headers
-                    let fresh_buffer = TunnelMessage::from_buffer(&buffer[..n]);
-                    match fresh_buffer {
-                        Ok(res) => {
-                            let complete = res.complete;
-                            tunnel_res = Some(res);
-
-                            if complete {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            return handle_forward_error(Some(e));
-                        }
-                    };
-                }
-            }
-            Err(e) => {
-                let msg = format!("Error reading back from connected client: {}", e);
-                return handle_forward_error(Some(Error::AnyError(msg.to_string())));
-            }
-        };
-    }
-
-    if let Some(fw_res) = tunnel_res {
-        return handle_forward_success(fw_res);
-    } else {
-        return handle_forward_error(Some(Error::AnyError(
-            "No response from connected client.".to_string(),
-        )));
+    match tunnel_res {
+        Ok(res) => handle_forward_success(res),
+        Err(e) => handle_forward_error(Some(e)),
     }
 }
 

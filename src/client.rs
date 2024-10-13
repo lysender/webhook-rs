@@ -65,7 +65,7 @@ async fn handle_connection(
 
     let req_queue = Arc::new(MessageQueue::new());
 
-    let _ = tokio::join!(
+    let _ = tokio::try_join!(
         handle_requests(tunnel_reader, req_queue.clone()),
         handle_forwards(tunnel_writer, req_queue, &config, crawler)
     );
