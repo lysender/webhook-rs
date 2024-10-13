@@ -63,18 +63,6 @@ async fn handle_connection(
 
     let _ = authenticate(tunnel_reader.clone(), tunnel_writer.clone(), config).await?;
 
-    // Verify both reader stream
-    {
-        let mut reader = tunnel_reader.lock().await;
-        reader.verify();
-    }
-
-    // Also verify the writer stream
-    {
-        let mut writer = tunnel_writer.lock().await;
-        writer.verify();
-    }
-
     let req_queue = Arc::new(MessageQueue::new());
 
     let reader_clone = tunnel_reader.clone();

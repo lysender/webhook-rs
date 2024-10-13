@@ -18,14 +18,16 @@ pub struct TunnelClient {
     verified: bool,
 }
 
+pub struct TunnelState {
+    pub verified: bool,
+}
+
 pub struct TunnelReader {
     stream: Option<OwnedReadHalf>,
-    verified: bool,
 }
 
 pub struct TunnelWriter {
     stream: Option<OwnedWriteHalf>,
-    verified: bool,
 }
 
 impl TunnelClient {
@@ -105,21 +107,13 @@ impl TunnelClient {
 
 impl TunnelReader {
     pub fn new() -> Self {
-        Self {
-            stream: None,
-            verified: false,
-        }
+        Self { stream: None }
     }
 
     pub fn with_stream(stream: OwnedReadHalf) -> Self {
         Self {
             stream: Some(stream),
-            verified: false,
         }
-    }
-
-    pub fn verify(&mut self) {
-        self.verified = true;
     }
 
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
@@ -140,21 +134,13 @@ impl TunnelReader {
 
 impl TunnelWriter {
     pub fn new() -> Self {
-        Self {
-            stream: None,
-            verified: false,
-        }
+        Self { stream: None }
     }
 
     pub fn with_stream(stream: OwnedWriteHalf) -> Self {
         Self {
             stream: Some(stream),
-            verified: false,
         }
-    }
-
-    pub fn verify(&mut self) {
-        self.verified = true;
     }
 
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
@@ -187,6 +173,16 @@ impl TunnelWriter {
 
         self.stream = None;
         Ok(())
+    }
+}
+
+impl TunnelState {
+    pub fn new() -> Self {
+        Self { verified: false }
+    }
+
+    pub fn verify(&mut self) {
+        self.verified = true;
     }
 }
 
