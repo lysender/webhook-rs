@@ -46,12 +46,10 @@ async fn main() {
 }
 
 async fn run_command(args: AppArgs) -> Result<()> {
-    //match args.command {
-    //    Commands::Server => run_server(&args).await,
-    //    Commands::Client => run_client(&args).await,
-    //}
-    test_notify().await;
-    Ok(())
+    match args.command {
+        Commands::Server => run_server(&args).await,
+        Commands::Client => run_client(&args).await,
+    }
 }
 
 async fn run_server(args: &AppArgs) -> Result<()> {

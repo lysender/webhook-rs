@@ -16,4 +16,26 @@ impl MessageQueue {
             notify: Notify::new(),
         }
     }
+
+    pub async fn push(&self, message: TunnelMessage) {
+        {
+            let mut messages = self.messages.lock().await;
+            messages.push_back(message);
+            // println!("Pushed message into queue: {}", message);
+        }
+        self.notify.notify_one();
+    }
+
+    pub async fn pop(&self) -> Option<TunnelMessage> {
+        let maybe_message = {
+            let mut messages = self.messages.lock().await;
+            messages.pop_front()
+        };
+
+        if maybe_message.is_none() {
+            self.notify.notified().await;
+        }
+
+        maybe_message
+    }
 }

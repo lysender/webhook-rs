@@ -179,7 +179,8 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
 
             if valid_auth(&request, &config.jwt_secret).is_ok() {
                 // Send response to client
-                let ok_msg = TunnelMessage::with_auth_ok();
+                let orig_id = request.id.clone();
+                let ok_msg = TunnelMessage::with_auth_ok(orig_id);
 
                 if let Err(reply_err) = client.write(&ok_msg.into_bytes()).await {
                     let msg = format!("Sending OK reply failed: {}", reply_err);
@@ -193,7 +194,8 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
                 error!("Invalid authorization code.");
 
                 // Send auth failed error to client
-                let err_msg = TunnelMessage::with_auth_unauthorized();
+                let orig_id = request.id.clone();
+                let err_msg = TunnelMessage::with_auth_unauthorized(orig_id);
 
                 if let Err(reply_err) = client.write(&err_msg.into_bytes()).await {
                     let msg = format!("Sending Unauthorized reply failed: {}", reply_err);

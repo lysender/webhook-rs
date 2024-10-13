@@ -1,3 +1,5 @@
+use uuid::Uuid;
+
 use crate::{Error, Result};
 
 const CR: u8 = b'\r';
@@ -8,8 +10,9 @@ const MSG_EOF: &[u8] = b"<<[[((^_^))]]>>";
 
 // Custom header names
 // Don't judge me
-pub const X_WEEB_HOOK_OP: &'static str = "x-weeb-hook-op";
-pub const X_WEEB_HOOK_TOKEN: &'static str = "x-weeb-hook-token";
+pub const WEBHOOK_OP: &'static str = "x-weeb-hook-op";
+pub const WEBHOOK_TOKEN: &'static str = "x-weeb-hook-token";
+pub const WEBHOOK_REQ_ID: &'static str = "x-weeb-hook-req-id";
 
 // Custom header possible values
 pub const WEBHOOK_OP_AUTH: &'static str = "auth";
@@ -177,6 +180,7 @@ fn parse_status_line(line: &str) -> Result<StatusLine> {
 
 #[derive(Debug)]
 pub struct TunnelMessage {
+    pub id: Uuid,
     pub status_line: StatusLine,
     pub headers: Vec<HeaderItem>,
     pub initial_body: Vec<u8>,
@@ -184,55 +188,56 @@ pub struct TunnelMessage {
 }
 
 impl TunnelMessage {
-    pub fn new(status_line: StatusLine) -> Self {
+    pub fn new(id: Uuid, status_line: StatusLine) -> Self {
         // Assumes new message is complete
         Self {
+            id,
             status_line,
-            headers: Vec::new(),
+            headers: vec![(WEBHOOK_REQ_ID.to_string(), id.to_string())],
             initial_body: Vec::new(),
             complete: true,
         }
     }
 
     /// Creates an auth request message
-    pub fn with_auth_token(token: String) -> Self {
+    pub fn with_auth_token(id: Uuid, token: String) -> Self {
         let st = StatusLine::Request(RequestLine::new(
             "POST".to_string(),
             "/_x_weeb_hook_auth".to_string(),
             "HTTP/1.1".to_string(),
         ));
 
-        let mut req = Self::new(st);
+        let mut req = Self::new(id, st);
         req.headers
-            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH.to_string()));
-        req.headers.push((X_WEEB_HOOK_TOKEN.to_string(), token));
+            .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_AUTH.to_string()));
+        req.headers.push((WEBHOOK_TOKEN.to_string(), token));
         req
     }
 
-    pub fn with_auth_ok() -> Self {
+    pub fn with_auth_ok(id: Uuid) -> Self {
         let st = StatusLine::Response(ResponseLine::new(
             "HTTP/1.1".to_string(),
             200,
             Some("OK".to_string()),
         ));
 
-        let mut res = Self::new(st);
+        let mut res = Self::new(id, st);
         res.headers
-            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
+            .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
         res.initial_body = "OK".as_bytes().to_vec();
         res
     }
 
-    pub fn with_auth_unauthorized() -> Self {
+    pub fn with_auth_unauthorized(id: Uuid) -> Self {
         let st = StatusLine::Response(ResponseLine::new(
             "HTTP/1.1".to_string(),
             401,
             Some("Unauthorized".to_string()),
         ));
 
-        let mut res = Self::new(st);
+        let mut res = Self::new(id, st);
         res.headers
-            .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
+            .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_AUTH_RES.to_string()));
         res.initial_body = "Unauthorized".as_bytes().to_vec();
         res
     }
@@ -257,15 +262,25 @@ impl TunnelMessage {
 
         let mut headers: Vec<HeaderItem> = Vec::new();
 
+        let mut id: Option<Uuid> = None;
+
         // Read the rest of the headers
         for line in lines {
             let h_line = line.trim();
             if h_line.len() >= 3 {
                 if let Some((k, v)) = h_line.split_once(":") {
-                    headers.push((k.to_lowercase(), v.trim().to_string()));
+                    let k = k.to_lowercase();
+                    let v = v.trim().to_string();
+
+                    if k.as_str() == WEBHOOK_REQ_ID {
+                        id = Uuid::parse_str(v.as_str()).ok();
+                    }
+                    headers.push((k, v));
                 }
             }
         }
+
+        let id: Uuid = id.expect("Webhook Request ID must be present");
 
         let mut initial_body: Vec<u8> = Vec::new();
         if let Some(b_start) = header.body_start {
@@ -274,6 +289,7 @@ impl TunnelMessage {
         }
 
         Ok(Self {
+            id,
             status_line,
             headers,
             initial_body,
@@ -335,14 +351,14 @@ impl TunnelMessage {
     pub fn webhook_op(&self) -> Option<&str> {
         self.headers
             .iter()
-            .find(|(k, _)| k.as_str() == X_WEEB_HOOK_OP)
+            .find(|(k, _)| k.as_str() == WEBHOOK_OP)
             .map(|(_, v)| v.as_str())
     }
 
     pub fn webhook_token(&self) -> Option<&str> {
         self.headers
             .iter()
-            .find(|(k, _)| k.as_str() == X_WEEB_HOOK_TOKEN)
+            .find(|(k, _)| k.as_str() == WEBHOOK_TOKEN)
             .map(|(_, v)| v.as_str())
     }
 

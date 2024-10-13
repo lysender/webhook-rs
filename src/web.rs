@@ -10,13 +10,14 @@ use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
+use uuid::Uuid;
 
 use crate::config::ServerConfig;
 use crate::message::RequestLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage;
+use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD;
-use crate::message::X_WEEB_HOOK_OP;
 use crate::tunnel::TunnelClient;
 use crate::Error;
 use crate::Result;
@@ -116,19 +117,23 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
         uri,
         "HTTP/1.1".to_string(),
     ));
-    let mut http_req = TunnelMessage::new(http_st);
+    let id = Uuid::now_v7();
+    let mut http_req = TunnelMessage::new(id, http_st);
 
     // Add original headers
-    http_req.headers = request
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
-        .collect();
+    http_req.headers.extend(
+        request
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string())),
+    );
 
     // Add custom headers for forwarding
     http_req
         .headers
-        .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
+        .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
+
+    println!("Request headers: {:?}", http_req.headers);
 
     // Add original body if present
     let with_body = vec!["POST", "PUT", "PATCH"];
