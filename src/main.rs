@@ -8,6 +8,7 @@ mod config;
 mod error;
 mod message;
 mod notify;
+mod queue;
 mod token;
 mod tunnel;
 mod utils;

@@ -15,39 +15,71 @@ struct SharedState {
     notify: Notify,
 }
 
-async fn push_values(state: Arc<SharedState>, values: Vec<Message>) {
-    for value in values {
+impl SharedState {
+    fn new() -> Self {
+        Self {
+            vec: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+        }
+    }
+
+    async fn push(&self, value: Message) {
         {
-            let mut vec = state.vec.lock().await;
+            let mut vec = self.vec.lock().await;
             vec.push_back(value);
             println!("Pushed value into vec: {}", value.id);
         }
-        state.notify.notify_one();
+        self.notify.notify_one();
+    }
+
+    async fn pop(&self) -> Option<Message> {
+        let maybe_value = {
+            let mut vec = self.vec.lock().await;
+            vec.pop_front()
+        };
+
+        if let Some(value) = maybe_value {
+            println!("Popped value from vec: {}", value.id);
+        }
+
+        maybe_value
+    }
+}
+
+async fn push_values(state: Arc<SharedState>, values: Vec<Message>) {
+    for value in values {
+        state.push(value).await;
+        //{
+        //    let mut vec = state.vec.lock().await;
+        //    vec.push_back(value);
+        //    println!("Pushed value into vec: {}", value.id);
+        //}
+        //state.notify.notify_one();
         sleep(Duration::from_millis(500)).await;
     }
 }
 
 async fn pop_values(state: Arc<SharedState>) {
     loop {
-        let maybe_value = {
-            let mut vec = state.vec.lock().await;
-            vec.pop_front()
-        };
+        let _ = state.pop().await;
+        sleep(Duration::from_secs(1)).await;
 
-        if let Some(value) = maybe_value {
-            println!("Popped value from vec: {}", value.id);
-            sleep(Duration::from_secs(1)).await;
-        } else {
-            state.notify.notified().await;
-        }
+        //let maybe_value = {
+        //    let mut vec = state.vec.lock().await;
+        //    vec.pop_front()
+        //};
+        //
+        //if let Some(value) = maybe_value {
+        //    println!("Popped value from vec: {}", value.id);
+        //    sleep(Duration::from_secs(1)).await;
+        //} else {
+        //    state.notify.notified().await;
+        //}
     }
 }
 
 pub async fn test_notify() {
-    let state = Arc::new(SharedState {
-        vec: Mutex::new(VecDeque::new()),
-        notify: Notify::new(),
-    });
+    let state = Arc::new(SharedState::new());
 
     let state_clone = state.clone();
 
