@@ -65,17 +65,10 @@ async fn handle_connection(
 
     let req_queue = Arc::new(MessageQueue::new());
 
-    let reader_clone = tunnel_reader.clone();
-    let req_queue_clone = req_queue.clone();
-    let req_task =
-        tokio::spawn(async move { handle_requests(reader_clone, req_queue_clone).await });
-
-    let config_clone = config.clone();
-    let forward_task = tokio::spawn(async move {
-        handle_forwards(tunnel_writer, req_queue, &config_clone, crawler).await
-    });
-
-    let _ = tokio::try_join!(req_task, forward_task);
+    let _ = tokio::join!(
+        handle_requests(tunnel_reader, req_queue.clone()),
+        handle_forwards(tunnel_writer, req_queue, &config, crawler)
+    );
 
     Err("Connection closed.".into())
 }
@@ -218,8 +211,8 @@ async fn handle_requests(
             }
             Err(e) => {
                 let msg = format!("Failed to read from server stream: {}", e);
-                client_error = msg.into();
-                break;
+                error!("{}", msg);
+                return Err(msg.into());
             }
         }
     }
@@ -239,19 +232,35 @@ async fn handle_forwards(
 
         if let Some(req) = maybe_req {
             println!("Got some forward request from queue...");
-            let res = handle_server_response(crawler.clone(), config, req).await?;
-            if let Some(forward_res) = res {
-                println!("Sending back response to server...");
-                let mut client = tunnel.lock().await;
-                if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
-                    let msg = format!("Unable to send back response: {}", fwr_err);
-                    return Err(msg.into());
-                }
-            }
+            let tunnel_clone = tunnel.clone();
+            let config_clone = config.clone();
+            let crawler_clone = crawler.clone();
+            tokio::spawn(async move {
+                handle_forward(tunnel_clone, &config_clone, crawler_clone, req).await
+            });
         }
     }
 
     Err("Forwarding loop exited.".into())
+}
+
+async fn handle_forward(
+    tunnel: Arc<Mutex<TunnelWriter>>,
+    config: &ClientConfig,
+    crawler: Client,
+    message: TunnelMessage,
+) -> Result<()> {
+    let res = handle_server_response(crawler, config, message).await?;
+    if let Some(forward_res) = res {
+        println!("Sending back response to server...");
+        let mut client = tunnel.lock().await;
+        if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
+            let msg = format!("Unable to send back response: {}", fwr_err);
+            error!("{}", msg);
+        }
+    }
+
+    Ok(())
 }
 
 async fn handle_server_response(

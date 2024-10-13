@@ -57,17 +57,10 @@ async fn run_server(args: &AppArgs) -> Result<()> {
     let arc_config = Arc::new(config);
     let client = Arc::new(Mutex::new(TunnelClient::new()));
 
-    let req_queue = Arc::new(MessageQueue::new());
-    let res_map = Arc::new(MessageMap::new());
-
-    let client_clone = client.clone();
-    let config_clone = arc_config.clone();
-    let tunnel_task =
-        tokio::spawn(async move { start_tunnel_server(client_clone, config_clone).await });
-
-    let web_task = tokio::spawn(async move { start_web_server(client, arc_config).await });
-
-    let res = tokio::try_join!(tunnel_task, web_task);
+    let res = tokio::try_join!(
+        start_tunnel_server(client.clone(), arc_config.clone()),
+        start_web_server(client, arc_config)
+    );
 
     if let Err(e) = res {
         let msg = format!("Error starting servers: {e}");
