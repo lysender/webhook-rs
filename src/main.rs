@@ -1,11 +1,13 @@
 use clap::Parser;
 use client::start_client;
+use notify::test_notify;
 use std::{process, sync::Arc};
 
 mod client;
 mod config;
 mod error;
 mod message;
+mod notify;
 mod token;
 mod tunnel;
 mod utils;
@@ -43,10 +45,12 @@ async fn main() {
 }
 
 async fn run_command(args: AppArgs) -> Result<()> {
-    match args.command {
-        Commands::Server => run_server(&args).await,
-        Commands::Client => run_client(&args).await,
-    }
+    //match args.command {
+    //    Commands::Server => run_server(&args).await,
+    //    Commands::Client => run_client(&args).await,
+    //}
+    test_notify().await;
+    Ok(())
 }
 
 async fn run_server(args: &AppArgs) -> Result<()> {
