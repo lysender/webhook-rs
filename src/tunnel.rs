@@ -18,6 +18,16 @@ pub struct TunnelClient {
     verified: bool,
 }
 
+pub struct TunnelReader {
+    stream: Option<OwnedReadHalf>,
+    verified: bool,
+}
+
+pub struct TunnelWriter {
+    stream: Option<OwnedWriteHalf>,
+    verified: bool,
+}
+
 impl TunnelClient {
     pub fn new() -> Self {
         TunnelClient {
@@ -81,6 +91,93 @@ impl TunnelClient {
             if let Err(shutdown_err) = stream.shutdown().await {
                 // We really need to close the stream so we let the error pass
                 let msg = format!("Failed to shutdown client stream: {}", shutdown_err);
+                error!(msg);
+                self.stream = None;
+
+                return Err(msg.into());
+            }
+        }
+
+        self.stream = None;
+        Ok(())
+    }
+}
+
+impl TunnelReader {
+    pub fn new() -> Self {
+        Self {
+            stream: None,
+            verified: false,
+        }
+    }
+
+    pub fn with_stream(stream: OwnedReadHalf) -> Self {
+        Self {
+            stream: Some(stream),
+            verified: false,
+        }
+    }
+
+    pub fn verify(&mut self) {
+        self.verified = true;
+    }
+
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if let Some(stream) = self.stream.as_mut() {
+            return match stream.read(buf).await {
+                Ok(n) => Ok(n),
+                Err(e) => {
+                    let msg = format!("Read client stream failed: {}", e);
+                    Err(msg.into())
+                }
+            };
+        }
+
+        // No connection yet
+        return Err("Stream reader failed: no client connection yet.".into());
+    }
+}
+
+impl TunnelWriter {
+    pub fn new() -> Self {
+        Self {
+            stream: None,
+            verified: false,
+        }
+    }
+
+    pub fn with_stream(stream: OwnedWriteHalf) -> Self {
+        Self {
+            stream: Some(stream),
+            verified: false,
+        }
+    }
+
+    pub fn verify(&mut self) {
+        self.verified = true;
+    }
+
+    pub async fn write(&mut self, data: &[u8]) -> Result<()> {
+        if let Some(stream) = self.stream.as_mut() {
+            return match stream.write_all(data).await {
+                Ok(_) => Ok(()),
+                Err(write_err) => {
+                    let msg = format!("Write to client stream failed: {}", write_err);
+                    Err(msg.into())
+                }
+            };
+        }
+
+        Err("Write to client stream failed: no client connection yet.".into())
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        info!("Closing TCP connection from client.");
+
+        if let Some(stream) = self.stream.as_mut() {
+            if let Err(shutdown_err) = stream.shutdown().await {
+                // We really need to close the stream so we let the error pass
+                let msg = format!("Failed to shutdown client writer stream: {}", shutdown_err);
                 error!(msg);
                 self.stream = None;
 

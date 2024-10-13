@@ -16,7 +16,9 @@ use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD_RES;
 use crate::message::WEBHOOK_TOKEN;
 use crate::queue::MessageQueue;
-use crate::tunnel::TunnelClient;
+use crate::tunnel::TunnelReader;
+use crate::tunnel::TunnelWriter;
+use crate::Error;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(config: &ClientConfig) {
@@ -55,41 +57,53 @@ async fn handle_connection(
 ) -> Result<()> {
     info!("Authenticating to server...");
 
-    let tunnel = Arc::new(Mutex::new(TunnelClient::with_stream(stream)));
-    let _ = authenticate(tunnel.clone(), config).await?;
+    let (reader, writer) = stream.into_split();
+    let tunnel_reader = Arc::new(Mutex::new(TunnelReader::with_stream(reader)));
+    let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::with_stream(writer)));
 
+    let _ = authenticate(tunnel_reader.clone(), tunnel_writer.clone(), config).await?;
+
+    // Verify both reader stream
     {
-        let mut client = tunnel.lock().await;
-        client.verify();
+        let mut reader = tunnel_reader.lock().await;
+        reader.verify();
+    }
+
+    // Also verify the writer stream
+    {
+        let mut writer = tunnel_writer.lock().await;
+        writer.verify();
     }
 
     let req_queue = Arc::new(MessageQueue::new());
-    // handle_messages(tunnel, req_queue.clone(), config, crawler).await
 
-    let tunnel_clone = tunnel.clone();
+    let reader_clone = tunnel_reader.clone();
     let req_queue_clone = req_queue.clone();
     let req_task =
-        tokio::spawn(async move { handle_requests(tunnel_clone, req_queue_clone).await });
+        tokio::spawn(async move { handle_requests(reader_clone, req_queue_clone).await });
 
     let config_clone = config.clone();
-    let forward_task =
-        tokio::spawn(
-            async move { handle_forwards(tunnel, req_queue, &config_clone, crawler).await },
-        );
+    let forward_task = tokio::spawn(async move {
+        handle_forwards(tunnel_writer, req_queue, &config_clone, crawler).await
+    });
 
     let _ = tokio::try_join!(req_task, forward_task);
 
-    Ok(())
+    Err("Connection closed.".into())
 }
 
-async fn authenticate(tunnel: Arc<Mutex<TunnelClient>>, config: &ClientConfig) -> Result<()> {
+async fn authenticate(
+    tunnel_reader: Arc<Mutex<TunnelReader>>,
+    tunnel_writer: Arc<Mutex<TunnelWriter>>,
+    config: &ClientConfig,
+) -> Result<()> {
     let id = Uuid::now_v7();
     let token = create_auth_token(&config.jwt_secret)?;
     let auth_req = TunnelMessage::with_auth_token(id, token);
 
     {
-        let mut client = tunnel.lock().await;
-        let write_res = client.write(&auth_req.into_bytes()).await;
+        let mut writer = tunnel_writer.lock().await;
+        let write_res = writer.write(&auth_req.into_bytes()).await;
 
         if let Err(write_err) = write_res {
             let msg = format!("Authenticating to server failed: {}", write_err);
@@ -98,28 +112,34 @@ async fn authenticate(tunnel: Arc<Mutex<TunnelClient>>, config: &ClientConfig) -
     }
 
     // Wait for server to respond to auth request
-    match timeout(Duration::from_secs(5), handle_auth_response(tunnel.clone())).await {
+    let auth_res = timeout(
+        Duration::from_secs(5),
+        handle_auth_response(tunnel_reader.clone()),
+    )
+    .await;
+
+    match auth_res {
         Ok(res) => match res {
             Ok(_) => Ok(()),
             Err(e) => {
                 let msg = format!("Authentication to server failed: {}", e);
                 error!("{}", msg);
-                let mut client = tunnel.lock().await;
-                let _ = client.close().await;
+                let mut writer = tunnel_writer.lock().await;
+                let _ = writer.close().await;
                 Err(msg.into())
             }
         },
         Err(_) => {
             let msg = "Server connection timeout";
             error!("{}", msg);
-            let mut client = tunnel.lock().await;
-            let _ = client.close().await;
+            let mut writer = tunnel_writer.lock().await;
+            let _ = writer.close().await;
             Err(msg.into())
         }
     }
 }
 
-async fn handle_auth_response(tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
+async fn handle_auth_response(tunnel: Arc<Mutex<TunnelReader>>) -> Result<()> {
     let mut client = tunnel.lock().await;
 
     // Authentication exchange should fit in 4k buffer
@@ -152,7 +172,7 @@ async fn handle_auth_response(tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
 }
 
 async fn handle_requests(
-    tunnel: Arc<Mutex<TunnelClient>>,
+    tunnel: Arc<Mutex<TunnelReader>>,
     req_queue: Arc<MessageQueue>,
 ) -> Result<()> {
     let mut client = tunnel.lock().await;
@@ -160,6 +180,7 @@ async fn handle_requests(
 
     // Accumulate stream data by looping over incoming message parts
     let mut tunnel_req: Option<TunnelMessage> = None;
+    let client_error: Error;
 
     // Listen for all forward requests from the server
     // This look should only break if there are errors
@@ -169,7 +190,9 @@ async fn handle_requests(
 
         match read_res {
             Ok(0) => {
-                info!("No data received from server.");
+                let error_msg = "No data received from server.";
+                info!("{}", error_msg);
+                client_error = error_msg.into();
                 break;
             }
             Ok(n) => {
@@ -207,16 +230,17 @@ async fn handle_requests(
             }
             Err(e) => {
                 let msg = format!("Failed to read from server stream: {}", e);
-                return Err(msg.into());
+                client_error = msg.into();
+                break;
             }
         }
     }
 
-    Ok(())
+    Err(client_error)
 }
 
 async fn handle_forwards(
-    tunnel: Arc<Mutex<TunnelClient>>,
+    tunnel: Arc<Mutex<TunnelWriter>>,
     req_queue: Arc<MessageQueue>,
     config: &ClientConfig,
     crawler: Client,
@@ -230,19 +254,16 @@ async fn handle_forwards(
             let res = handle_server_response(crawler.clone(), config, req).await?;
             if let Some(forward_res) = res {
                 println!("Sending back response to server...");
-                let tunnel_clone = tunnel.clone();
-                let mut client = tunnel_clone.lock().await;
+                let mut client = tunnel.lock().await;
                 if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
                     let msg = format!("Unable to send back response: {}", fwr_err);
                     return Err(msg.into());
                 }
-            } else {
-                println!("No response to forward...");
             }
         }
     }
 
-    Ok(())
+    Err("Forwarding loop exited.".into())
 }
 
 async fn handle_server_response(
