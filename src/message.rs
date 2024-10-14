@@ -11,7 +11,7 @@ const MSG_EOF: &[u8] = b"<<[[((^_^))]]>>";
 // Custom header names
 pub const WEBHOOK_OP: &'static str = "x-webhook-op";
 pub const WEBHOOK_TOKEN: &'static str = "x-webhook-token";
-pub const WEBHOOK_REQ_ID: &'static str = "x-web-ook-req-id";
+pub const WEBHOOK_REQ_ID: &'static str = "x-webhook-req-id";
 
 // Custom header possible values
 pub const WEBHOOK_OP_AUTH: &'static str = "auth";

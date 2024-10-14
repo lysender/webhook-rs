@@ -181,6 +181,12 @@ async fn handle_requests(
                 break;
             }
             Ok(n) => {
+                // Debug body
+                info!("Received {} bytes from server.", n);
+                info!("Decoded content: ");
+                let decoded = String::from_utf8_lossy(&buffer[..n]);
+                info!("{}", decoded);
+                info!("End of decoded content");
                 if let Some(mut res) = tunnel_req.take() {
                     let complete = res.accumulate_body(&buffer[..n]);
                     if complete {
@@ -253,6 +259,11 @@ async fn handle_forward(
 ) -> Result<()> {
     let res = handle_server_response(crawler, config, message).await?;
     if let Some(forward_res) = res {
+        let body = forward_res.initial_body.clone();
+        info!("Debug forward response body");
+        let decoded = String::from_utf8_lossy(&body);
+        info!("{}", decoded);
+        info!("End of debug forward response body");
         let mut client = tunnel.lock().await;
         if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
             let msg = format!("Unable to send back response: {}", fwr_err);
