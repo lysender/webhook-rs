@@ -46,6 +46,11 @@ impl TunnelState {
         let mut verified = self.verified.lock().await;
         *verified = true;
     }
+
+    pub async fn reset(&self) {
+        let mut verified = self.verified.lock().await;
+        *verified = false;
+    }
 }
 
 impl TunnelReader {
@@ -125,6 +130,12 @@ pub async fn start_tunnel_server(
     info!("Webhook tunnel server started at {}", address);
 
     loop {
+        // Reset connection state for new connections
+        {
+            let tc = tunnel_state.clone();
+            tc.reset().await;
+        }
+
         info!("Waiting for incoming connections...");
 
         // Will keep accepting new connections
