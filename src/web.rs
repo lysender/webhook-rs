@@ -111,7 +111,6 @@ async fn fallback_handler() -> Response<Body> {
 
 async fn webhook_handler(state: State<AppState>, request: Request) -> Response<Body> {
     let id = Uuid::now_v7();
-    info!("Received webhook request: {}", id.to_string());
 
     if !state.tunnel_state.is_verified().await {
         return handle_forward_error(None);
