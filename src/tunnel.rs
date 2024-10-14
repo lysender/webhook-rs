@@ -127,26 +127,27 @@ pub async fn start_tunnel_server(
     loop {
         info!("Waiting for incoming connections...");
 
-        let config_copy = arc_config.clone();
-        let ts_copy = tunnel_state.clone();
-        let req_queue_copy = req_queue.clone();
-        let res_map_copy = res_map.clone();
-
         // Will keep accepting new connections
         let res = listener.accept().await;
+
+        // Only accept one client
         match res {
             Ok((stream, addr)) => {
-                info!("Connection established: {:?}", addr);
-                tokio::spawn(handle_client(
-                    config_copy,
-                    ts_copy,
+                info!("Connection established: {}", addr);
+                let client_res = handle_client(
+                    arc_config.clone(),
+                    tunnel_state.clone(),
                     stream,
-                    req_queue_copy,
-                    res_map_copy,
-                ));
+                    req_queue.clone(),
+                    res_map.clone(),
+                )
+                .await;
+                if let Err(e) = client_res {
+                    error!("Error handling client: {}", e);
+                }
             }
             Err(e) => {
-                error!("Error accepting connection: {:?}", e);
+                error!("Error accepting connection: {}", e);
                 break;
             }
         }
@@ -175,10 +176,15 @@ async fn handle_client(
     // 1. Read request queue and write them to client stream
     // 2. Read client stream and write to response map
 
-    let _ = tokio::try_join!(
+    let join_res = tokio::try_join!(
         handle_requests(tunnel_writer, req_queue),
         handle_responses(tunnel_reader, res_map)
     );
+
+    if let Err(e) = join_res {
+        let msg = format!("{}", e);
+        return Err(msg.into());
+    }
 
     Ok(())
 }
