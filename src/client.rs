@@ -58,8 +58,8 @@ async fn handle_connection(
     info!("Authenticating to server...");
 
     let (reader, writer) = stream.into_split();
-    let tunnel_reader = Arc::new(Mutex::new(TunnelReader::with_stream(reader)));
-    let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::with_stream(writer)));
+    let tunnel_reader = Arc::new(Mutex::new(TunnelReader::new(reader)));
+    let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::new(writer)));
 
     let _ = authenticate(tunnel_reader.clone(), tunnel_writer.clone(), config).await?;
 

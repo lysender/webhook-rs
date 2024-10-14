@@ -31,11 +31,7 @@ pub struct TunnelWriter {
 }
 
 impl TunnelReader {
-    pub fn new() -> Self {
-        Self { stream: None }
-    }
-
-    pub fn with_stream(stream: OwnedReadHalf) -> Self {
+    pub fn new(stream: OwnedReadHalf) -> Self {
         Self {
             stream: Some(stream),
         }
@@ -58,11 +54,7 @@ impl TunnelReader {
 }
 
 impl TunnelWriter {
-    pub fn new() -> Self {
-        Self { stream: None }
-    }
-
-    pub fn with_stream(stream: OwnedWriteHalf) -> Self {
+    pub fn new(stream: OwnedWriteHalf) -> Self {
         Self {
             stream: Some(stream),
         }
@@ -160,8 +152,8 @@ async fn handle_client(
 ) -> Result<()> {
     // Split stream
     let (reader, writer) = stream.into_split();
-    let tunnel_reader = Arc::new(Mutex::new(TunnelReader::with_stream(reader)));
-    let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::with_stream(writer)));
+    let tunnel_reader = Arc::new(Mutex::new(TunnelReader::new(reader)));
+    let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::new(writer)));
 
     let _ = authenticate(config.clone(), tunnel_reader.clone(), tunnel_writer.clone()).await?;
 
