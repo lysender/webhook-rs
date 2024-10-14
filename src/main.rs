@@ -19,7 +19,7 @@ use config::{AppArgs, ClientConfig, Commands, ServerConfig, RUST_LOG};
 pub use error::{Error, Result};
 
 use tracing::error;
-use tunnel::start_tunnel_server;
+use tunnel::{start_tunnel_server, TunnelState};
 use web::start_web_server;
 
 #[tokio::main]
@@ -53,12 +53,18 @@ async fn run_server(args: &AppArgs) -> Result<()> {
     let config = ServerConfig::build(args.config.as_path())?;
     let arc_config = Arc::new(config);
 
+    let tunnel_state = Arc::new(TunnelState::new());
     let req_queue = Arc::new(MessageQueue::new());
     let res_map = Arc::new(MessageMap::new());
 
     let res = tokio::try_join!(
-        start_tunnel_server(arc_config.clone(), req_queue.clone(), res_map.clone()),
-        start_web_server(arc_config, req_queue, res_map)
+        start_tunnel_server(
+            arc_config.clone(),
+            tunnel_state.clone(),
+            req_queue.clone(),
+            res_map.clone()
+        ),
+        start_web_server(arc_config, tunnel_state, req_queue, res_map)
     );
 
     if let Err(e) = res {

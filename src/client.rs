@@ -23,7 +23,9 @@ use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(config: &ClientConfig) {
     loop {
-        if let Err(e) = connect(&config).await {
+        let con = { connect(&config).await };
+
+        if let Err(e) = con {
             error!("Connection error: {}", e);
             info!("Reconnecting in 10 seconds...");
 

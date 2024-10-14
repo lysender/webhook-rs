@@ -19,7 +19,7 @@ use crate::{
 use crate::{token::verify_auth_token, Result};
 
 pub struct TunnelState {
-    pub verified: bool,
+    verified: Mutex<bool>,
 }
 
 pub struct TunnelReader {
@@ -28,6 +28,24 @@ pub struct TunnelReader {
 
 pub struct TunnelWriter {
     stream: Option<OwnedWriteHalf>,
+}
+
+impl TunnelState {
+    pub fn new() -> Self {
+        Self {
+            verified: Mutex::new(false),
+        }
+    }
+
+    pub async fn is_verified(&self) -> bool {
+        let verified = self.verified.lock().await;
+        *verified
+    }
+
+    pub async fn verify(&self) {
+        let mut verified = self.verified.lock().await;
+        *verified = true;
+    }
 }
 
 impl TunnelReader {
@@ -93,18 +111,9 @@ impl TunnelWriter {
     }
 }
 
-impl TunnelState {
-    pub fn new() -> Self {
-        Self { verified: false }
-    }
-
-    pub fn verify(&mut self) {
-        self.verified = true;
-    }
-}
-
 pub async fn start_tunnel_server(
     config: Arc<ServerConfig>,
+    tunnel_state: Arc<TunnelState>,
     req_queue: Arc<MessageQueue>,
     res_map: Arc<MessageMap>,
 ) -> Result<()> {
@@ -119,6 +128,7 @@ pub async fn start_tunnel_server(
         info!("Waiting for incoming connections...");
 
         let config_copy = arc_config.clone();
+        let ts_copy = tunnel_state.clone();
         let req_queue_copy = req_queue.clone();
         let res_map_copy = res_map.clone();
 
@@ -129,6 +139,7 @@ pub async fn start_tunnel_server(
                 info!("Connection established: {:?}", addr);
                 tokio::spawn(handle_client(
                     config_copy,
+                    ts_copy,
                     stream,
                     req_queue_copy,
                     res_map_copy,
@@ -146,6 +157,7 @@ pub async fn start_tunnel_server(
 
 async fn handle_client(
     config: Arc<ServerConfig>,
+    tunnel_state: Arc<TunnelState>,
     stream: TcpStream,
     req_queue: Arc<MessageQueue>,
     res_map: Arc<MessageMap>,
@@ -156,6 +168,8 @@ async fn handle_client(
     let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::new(writer)));
 
     let _ = authenticate(config.clone(), tunnel_reader.clone(), tunnel_writer.clone()).await?;
+
+    tunnel_state.verify().await;
 
     // Once authenticated, spawn two tasks:
     // 1. Read request queue and write them to client stream

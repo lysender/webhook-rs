@@ -19,18 +19,21 @@ use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD;
 use crate::queue::MessageMap;
 use crate::queue::MessageQueue;
+use crate::tunnel::TunnelState;
 use crate::Error;
 use crate::Result;
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
     config: Arc<ServerConfig>,
+    tunnel_state: Arc<TunnelState>,
     req_queue: Arc<MessageQueue>,
     res_map: Arc<MessageMap>,
 }
 
 pub async fn start_web_server(
     config: Arc<ServerConfig>,
+    tunnel_state: Arc<TunnelState>,
     req_queue: Arc<MessageQueue>,
     res_map: Arc<MessageMap>,
 ) -> Result<()> {
@@ -40,6 +43,7 @@ pub async fn start_web_server(
 
     let state = AppState {
         config: arc_config,
+        tunnel_state: tunnel_state.clone(),
         req_queue: req_queue.clone(),
         res_map: res_map.clone(),
     };
@@ -105,6 +109,10 @@ async fn fallback_handler() -> Response<Body> {
 }
 
 async fn webhook_handler(state: State<AppState>, request: Request) -> Response<Body> {
+    if !state.tunnel_state.is_verified().await {
+        return handle_forward_error(None);
+    }
+
     let uri = request.uri().to_string();
     let method = request.method().to_string();
 
