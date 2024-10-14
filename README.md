@@ -5,7 +5,7 @@ Exposes your private endpoints to the world.
 ## Overview
 
 - Exposes a local endpoint to the internet
-- Needs a cloud server to run the server version of the app
+- Requires a server sitting in the cloud and a client running locally
 - Supports two modes:
     - Webhook mode - exposes an endpoint path
     - Website mode - exposes the root path
@@ -17,8 +17,8 @@ development purposes. Some paid solutions already exist but they are
 not really worth it since I just need to run the tool once in a while.
 
 I wrote this tool for a very simple use case:
-- Run the server version of the app on a cloud server
-- Run the client version of the app locally
+- Run the server app on a cloud server to accept webhook requests
+- Run the client app to forward requests to the target app running locally
 - Stop the apps when done
 
 ## Just give me the EXE!
@@ -98,17 +98,8 @@ Use it at your own risk.
 
 ## Performance
 
-Although the client and server apps are written in multi-threaded and async
-fashion, there is only one TCP connection maintained between the client and
-the server.
-
-This means that requests are handled sequentially.
-
-Using multiple TCP connections may improve performance but it is already
-an overkill for my simple webhook use case.
-
-I will consider adding an option for multiple connections in the future
-but that's it for now.
+Although the tool is designed for testing applications for development purposes,
+it actually has good enough performance to be used in production.
 
 ## Feedbacks
 
