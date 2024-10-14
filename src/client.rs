@@ -65,10 +65,15 @@ async fn handle_connection(
 
     let req_queue = Arc::new(MessageQueue::new());
 
-    let _ = tokio::try_join!(
+    let join_res = tokio::try_join!(
         handle_requests(tunnel_reader, req_queue.clone()),
         handle_forwards(tunnel_writer, req_queue, &config, crawler)
     );
+
+    if let Err(e) = join_res {
+        let msg = format!("{}", e);
+        return Err(msg.into());
+    }
 
     Err("Connection closed.".into())
 }
@@ -210,7 +215,6 @@ async fn handle_requests(
             }
             Err(e) => {
                 let msg = format!("Failed to read from server stream: {}", e);
-                error!("{}", msg);
                 return Err(msg.into());
             }
         }
