@@ -291,7 +291,8 @@ async fn forward_request(
     let method = st.method.as_str();
     let uri = st.path.as_str();
 
-    info!("Forwarding request: {} {}", method, uri);
+    let req_id = message.id.to_string();
+    info!("Forwarding request: {} {} ID={}", method, uri, req_id);
 
     // Figure out the method
     // We assume that the target is a localhost address

@@ -110,6 +110,9 @@ async fn fallback_handler() -> Response<Body> {
 }
 
 async fn webhook_handler(state: State<AppState>, request: Request) -> Response<Body> {
+    let id = Uuid::now_v7();
+    info!("Received webhook request: {}", id.to_string());
+
     if !state.tunnel_state.is_verified().await {
         return handle_forward_error(None);
     }
@@ -123,7 +126,6 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
         uri,
         "HTTP/1.1".to_string(),
     ));
-    let id = Uuid::now_v7();
     let mut http_req = TunnelMessage::new(id, http_st);
 
     // Add original headers
@@ -147,12 +149,10 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     }
 
     // Push the request to the queue
-    let queue = state.req_queue.clone();
-    queue.push(http_req).await;
+    state.req_queue.push(http_req).await;
 
     // Wait for response to arrive
-    let map = state.res_map.clone();
-    let tunnel_res = map.get(&id.as_u128()).await;
+    let tunnel_res = state.res_map.get(&id.as_u128()).await;
 
     match tunnel_res {
         Ok(res) => handle_forward_success(res),
@@ -177,6 +177,11 @@ fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
 
         r = r.header(k, v);
     }
+
+    // debug body for excess characters
+    let body = fw_res.initial_body.clone();
+    let text = String::from_utf8_lossy(&body);
+    println!("Body: {}", text);
 
     r.body(Body::from(fw_res.initial_body)).unwrap()
 }

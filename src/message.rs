@@ -9,14 +9,13 @@ const LF: u8 = b'\n';
 const MSG_EOF: &[u8] = b"<<[[((^_^))]]>>";
 
 // Custom header names
-// Don't judge me
-pub const WEBHOOK_OP: &'static str = "x-weeb-hook-op";
-pub const WEBHOOK_TOKEN: &'static str = "x-weeb-hook-token";
-pub const WEBHOOK_REQ_ID: &'static str = "x-weeb-hook-req-id";
+pub const WEBHOOK_OP: &'static str = "x-webhook-op";
+pub const WEBHOOK_TOKEN: &'static str = "x-webhook-token";
+pub const WEBHOOK_REQ_ID: &'static str = "x-web-ook-req-id";
 
 // Custom header possible values
 pub const WEBHOOK_OP_AUTH: &'static str = "auth";
-pub const WEBHOOK_OP_AUTH_PATH: &'static str = "/_x_weeb_hook_auth";
+pub const WEBHOOK_OP_AUTH_PATH: &'static str = "/_x_webhook_auth";
 pub const WEBHOOK_OP_AUTH_RES: &'static str = "auth-res";
 pub const WEBHOOK_OP_FORWARD: &'static str = "forward";
 pub const WEBHOOK_OP_FORWARD_RES: &'static str = "forward-res";
@@ -203,7 +202,7 @@ impl TunnelMessage {
     pub fn with_auth_token(id: Uuid, token: String) -> Self {
         let st = StatusLine::Request(RequestLine::new(
             "POST".to_string(),
-            "/_x_weeb_hook_auth".to_string(),
+            WEBHOOK_OP_AUTH_PATH.to_string(),
             "HTTP/1.1".to_string(),
         ));
 
