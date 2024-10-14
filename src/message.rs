@@ -296,6 +296,57 @@ impl TunnelMessage {
         })
     }
 
+    pub fn from_large_buffer(buffer: &[u8]) -> Result<Vec<Self>> {
+        let mut messages: Vec<Self> = Vec::new();
+        let mut start = 0;
+        let len = buffer.len();
+
+        while start < len {
+            let msg_pos = buffer[start..len]
+                .windows(MSG_EOF.len())
+                .position(|w| w == MSG_EOF);
+
+            if let Some(pos) = msg_pos {
+                // Marker found, this is probably a message
+                let buf_start = start;
+                let buf_end = start + pos + MSG_EOF.len();
+
+                // Consume the range as a message
+                let res = Self::from_buffer(&buffer[buf_start..buf_end]);
+                match res {
+                    Ok(msg) => {
+                        messages.push(msg);
+
+                        // Move on to the next message
+                        start = buf_end;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                };
+            } else {
+                // It is possible that this buffer is too large that
+                // it's body is partial, so we well consume the entire buffer instead
+                let buf_start = start;
+                let buf_end = len;
+                let res = Self::from_buffer(&buffer[buf_start..buf_end]);
+                match res {
+                    Ok(msg) => {
+                        messages.push(msg);
+
+                        // We are done here
+                        start = buf_end;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                };
+            }
+        }
+
+        Ok(messages)
+    }
+
     pub fn is_auth(&self) -> bool {
         if !self.is_request() {
             return false;
@@ -585,5 +636,108 @@ mod tests {
 
         let buffer = data.as_slice();
         assert!(buffer.ends_with(MSG_EOF));
+    }
+
+    #[test]
+    fn test_multiple_complete_messages() {
+        let eof = String::from_utf8_lossy(MSG_EOF).to_string();
+
+        let id1 = Uuid::now_v7();
+        let id1_header = format!("{}: {}", WEBHOOK_REQ_ID, id1.to_string());
+        let body1 = format!("{}{}", "{\"foo\":\"bar\"}", eof);
+
+        let buffer1 = format!(
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "HTTP/1.1 200 OK",
+            "Content-Type: application/json",
+            "Content-Length: 13",
+            id1_header.as_str(),
+            "",
+            body1.as_str()
+        );
+
+        let id2 = Uuid::now_v7();
+        let id2_header = format!("{}: {}", WEBHOOK_REQ_ID, id2.to_string());
+        let body2 = format!("{}{}", "{\"foo\":\"bar\"}", eof);
+
+        let buffer2 = format!(
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "HTTP/1.1 200 OK",
+            "Content-Type: application/json",
+            "Content-Length: 13",
+            id2_header.as_str(),
+            "",
+            body2.as_str()
+        );
+
+        let full_buffer = format!("{}{}", buffer1, buffer2);
+        let buffer_bytes = full_buffer.as_bytes();
+
+        // Parse buffer to get 1 or more messages where the last message may be incomplete
+        let messages =
+            TunnelMessage::from_large_buffer(buffer_bytes).expect("Messages must be parsed");
+
+        assert_eq!(messages.len(), 2);
+
+        // First message
+        let msg1 = &messages[0];
+        assert_eq!(msg1.id, id1);
+        assert!(msg1.complete);
+
+        // Second message
+        let msg2 = &messages[1];
+        assert_eq!(msg2.id, id2);
+        assert!(msg2.complete);
+    }
+
+    fn test_multiple_messages_last_incomplete() {
+        let eof = String::from_utf8_lossy(MSG_EOF).to_string();
+
+        let id1 = Uuid::now_v7();
+        let id1_header = format!("{}: {}", WEBHOOK_REQ_ID, id1.to_string());
+        let body1 = format!("{}{}", "{\"foo\":\"bar\"}", eof);
+
+        let buffer1 = format!(
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "HTTP/1.1 200 OK",
+            "Content-Type: application/json",
+            "Content-Length: 13",
+            id1_header.as_str(),
+            "",
+            body1.as_str()
+        );
+
+        let id2 = Uuid::now_v7();
+        let id2_header = format!("{}: {}", WEBHOOK_REQ_ID, id2.to_string());
+        let body2 = format!("{}", "{\"foo");
+
+        let buffer2 = format!(
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "HTTP/1.1 200 OK",
+            "Content-Type: application/json",
+            "Content-Length: 13",
+            id2_header.as_str(),
+            "",
+            body2.as_str()
+        );
+
+        let full_buffer = format!("{}{}", buffer1, buffer2);
+        let buffer_bytes = full_buffer.as_bytes();
+
+        // Parse buffer to get 1 or more messages where the last message may be incomplete
+        let messages =
+            TunnelMessage::from_large_buffer(buffer_bytes).expect("Messages must be parsed");
+
+        assert_eq!(messages.len(), 2);
+
+        // First message
+        let msg1 = &messages[0];
+        assert_eq!(msg1.id, id1);
+        assert!(msg1.complete);
+
+        // Second message
+        let msg2 = &messages[1];
+        assert_eq!(msg2.id, id2);
+        assert!(!msg2.complete);
     }
 }
