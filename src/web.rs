@@ -17,6 +17,7 @@ use crate::message::StatusLine;
 use crate::message::TunnelMessage;
 use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD;
+use crate::message::WEBHOOK_REQ_ID;
 use crate::queue::MessageMap;
 use crate::queue::MessageQueue;
 use crate::tunnel::TunnelState;
@@ -169,6 +170,11 @@ fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
 
     let mut r = Response::builder().status(st.status_code);
     for (k, v) in fw_res.headers.iter() {
+        // Skip custom headers
+        if k == WEBHOOK_OP || k == WEBHOOK_REQ_ID {
+            continue;
+        }
+
         r = r.header(k, v);
     }
 
