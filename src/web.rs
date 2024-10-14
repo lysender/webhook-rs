@@ -6,39 +6,47 @@ use axum::routing::get;
 use axum::Router;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
+use uuid::Uuid;
 
 use crate::config::ServerConfig;
 use crate::message::RequestLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage;
+use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD;
-use crate::message::X_WEEB_HOOK_OP;
-use crate::tunnel::TunnelClient;
+use crate::message::WEBHOOK_REQ_ID;
+use crate::queue::MessageMap;
+use crate::queue::MessageQueue;
+use crate::tunnel::TunnelState;
 use crate::Error;
 use crate::Result;
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
-    tunnel: Arc<Mutex<TunnelClient>>,
     config: Arc<ServerConfig>,
+    tunnel_state: Arc<TunnelState>,
+    req_queue: Arc<MessageQueue>,
+    res_map: Arc<MessageMap>,
 }
 
 pub async fn start_web_server(
-    tunnel: Arc<Mutex<TunnelClient>>,
     config: Arc<ServerConfig>,
+    tunnel_state: Arc<TunnelState>,
+    req_queue: Arc<MessageQueue>,
+    res_map: Arc<MessageMap>,
 ) -> Result<()> {
-    let arc_tunnel = tunnel.clone();
     let arc_config = config.clone();
     let web_address = arc_config.web_address.clone();
     let webhook_path = arc_config.webhook_path.clone();
 
     let state = AppState {
-        tunnel: arc_tunnel,
         config: arc_config,
+        tunnel_state: tunnel_state.clone(),
+        req_queue: req_queue.clone(),
+        res_map: res_map.clone(),
     };
 
     let wh_path = webhook_path.as_str();
@@ -102,8 +110,9 @@ async fn fallback_handler() -> Response<Body> {
 }
 
 async fn webhook_handler(state: State<AppState>, request: Request) -> Response<Body> {
-    let mut client = state.tunnel.lock().await;
-    if !client.is_verified() {
+    let id = Uuid::now_v7();
+
+    if !state.tunnel_state.is_verified().await {
         return handle_forward_error(None);
     }
 
@@ -116,19 +125,20 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
         uri,
         "HTTP/1.1".to_string(),
     ));
-    let mut http_req = TunnelMessage::new(http_st);
+    let mut http_req = TunnelMessage::new(id, http_st);
 
     // Add original headers
-    http_req.headers = request
-        .headers()
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
-        .collect();
+    http_req.headers.extend(
+        request
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string())),
+    );
 
     // Add custom headers for forwarding
     http_req
         .headers
-        .push((X_WEEB_HOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
+        .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
 
     // Add original body if present
     let with_body = vec!["POST", "PUT", "PATCH"];
@@ -137,63 +147,15 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
         http_req.initial_body = body_bytes.to_vec();
     }
 
-    if let Err(write_err) = client.write(&http_req.into_bytes()).await {
-        return handle_forward_error(Some(write_err));
-    }
+    // Push the request to the queue
+    state.req_queue.push(http_req).await;
 
-    // Read from client response
-    let mut buffer = [0; 8192];
-    let mut tunnel_res: Option<TunnelMessage> = None;
+    // Wait for response to arrive
+    let tunnel_res = state.res_map.get(&id.as_u128()).await;
 
-    loop {
-        match client.read(&mut buffer).await {
-            Ok(0) => {
-                return handle_forward_error(Some(Error::AnyError(
-                    "No response from connected client.".to_string(),
-                )));
-            }
-            Ok(n) => {
-                if let Some(mut res) = tunnel_res.take() {
-                    // Append data to existing body, assuming these are part of the data
-                    if res.accumulate_body(&buffer[..n]) {
-                        // Body complete, let's process the message
-                        tunnel_res = Some(res);
-                        break;
-                    } else {
-                        // Continue accumulating body
-                        tunnel_res = Some(res);
-                    }
-                } else {
-                    // This is a fresh buffer, read headers
-                    let fresh_buffer = TunnelMessage::from_buffer(&buffer[..n]);
-                    match fresh_buffer {
-                        Ok(res) => {
-                            let complete = res.complete;
-                            tunnel_res = Some(res);
-
-                            if complete {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            return handle_forward_error(Some(e));
-                        }
-                    };
-                }
-            }
-            Err(e) => {
-                let msg = format!("Error reading back from connected client: {}", e);
-                return handle_forward_error(Some(Error::AnyError(msg.to_string())));
-            }
-        };
-    }
-
-    if let Some(fw_res) = tunnel_res {
-        return handle_forward_success(fw_res);
-    } else {
-        return handle_forward_error(Some(Error::AnyError(
-            "No response from connected client.".to_string(),
-        )));
+    match tunnel_res {
+        Ok(res) => handle_forward_success(res),
+        Err(e) => handle_forward_error(Some(e)),
     }
 }
 
@@ -207,6 +169,11 @@ fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
 
     let mut r = Response::builder().status(st.status_code);
     for (k, v) in fw_res.headers.iter() {
+        // Skip custom headers
+        if k == WEBHOOK_OP || k == WEBHOOK_REQ_ID {
+            continue;
+        }
+
         r = r.header(k, v);
     }
 

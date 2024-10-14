@@ -1,45 +1,58 @@
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{
+        tcp::{OwnedReadHalf, OwnedWriteHalf},
+        TcpListener, TcpStream,
+    },
     sync::Mutex,
     time::timeout,
 };
 use tracing::{error, info};
 
-use crate::{config::ServerConfig, message::TunnelMessage, Error};
+use crate::{
+    config::ServerConfig,
+    message::TunnelMessage,
+    queue::{MessageMap, MessageQueue},
+    Error,
+};
 use crate::{token::verify_auth_token, Result};
 
-pub struct TunnelClient {
-    stream: Option<TcpStream>,
-    verified: bool,
+pub struct TunnelState {
+    verified: Mutex<bool>,
 }
 
-impl TunnelClient {
+pub struct TunnelReader {
+    stream: Option<OwnedReadHalf>,
+}
+
+pub struct TunnelWriter {
+    stream: Option<OwnedWriteHalf>,
+}
+
+impl TunnelState {
     pub fn new() -> Self {
-        TunnelClient {
-            stream: None,
-            verified: false,
+        Self {
+            verified: Mutex::new(false),
         }
     }
 
-    pub fn with_stream(stream: TcpStream) -> Self {
+    pub async fn is_verified(&self) -> bool {
+        let verified = self.verified.lock().await;
+        *verified
+    }
+
+    pub async fn verify(&self) {
+        let mut verified = self.verified.lock().await;
+        *verified = true;
+    }
+}
+
+impl TunnelReader {
+    pub fn new(stream: OwnedReadHalf) -> Self {
         Self {
             stream: Some(stream),
-            verified: false,
         }
-    }
-
-    pub fn verify(&mut self) {
-        self.verified = true;
-    }
-
-    pub fn is_connected(&self) -> bool {
-        self.stream.is_some()
-    }
-
-    pub fn is_verified(&self) -> bool {
-        self.verified && self.is_connected()
     }
 
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
@@ -54,7 +67,15 @@ impl TunnelClient {
         }
 
         // No connection yet
-        return Err("Read client stream failed: no client connection yet.".into());
+        return Err("Stream reader failed: no client connection yet.".into());
+    }
+}
+
+impl TunnelWriter {
+    pub fn new(stream: OwnedWriteHalf) -> Self {
+        Self {
+            stream: Some(stream),
+        }
     }
 
     pub async fn write(&mut self, data: &[u8]) -> Result<()> {
@@ -77,7 +98,7 @@ impl TunnelClient {
         if let Some(stream) = self.stream.as_mut() {
             if let Err(shutdown_err) = stream.shutdown().await {
                 // We really need to close the stream so we let the error pass
-                let msg = format!("Failed to shutdown client stream: {}", shutdown_err);
+                let msg = format!("Failed to shutdown client writer stream: {}", shutdown_err);
                 error!(msg);
                 self.stream = None;
 
@@ -91,8 +112,10 @@ impl TunnelClient {
 }
 
 pub async fn start_tunnel_server(
-    tunnel: Arc<Mutex<TunnelClient>>,
     config: Arc<ServerConfig>,
+    tunnel_state: Arc<TunnelState>,
+    req_queue: Arc<MessageQueue>,
+    res_map: Arc<MessageMap>,
 ) -> Result<()> {
     let arc_config = config.clone();
 
@@ -104,21 +127,27 @@ pub async fn start_tunnel_server(
     loop {
         info!("Waiting for incoming connections...");
 
-        let tunnel_copy = tunnel.clone();
-        let config_copy = arc_config.clone();
-
         // Will keep accepting new connections
         let res = listener.accept().await;
+
+        // Only accept one client
         match res {
             Ok((stream, addr)) => {
-                info!("Connection established: {:?}", addr);
-                tokio::spawn(handle_client(config_copy, tunnel_copy, stream));
+                info!("Connection established: {}", addr);
+                let client_res = handle_client(
+                    arc_config.clone(),
+                    tunnel_state.clone(),
+                    stream,
+                    req_queue.clone(),
+                    res_map.clone(),
+                )
+                .await;
+                if let Err(e) = client_res {
+                    error!("Error handling client: {}", e);
+                }
             }
             Err(e) => {
-                let mut client = tunnel_copy.lock().await;
-                *client = TunnelClient::new();
-
-                error!("Error accepting connection: {:?}", e);
+                error!("Error accepting connection: {}", e);
                 break;
             }
         }
@@ -129,23 +158,55 @@ pub async fn start_tunnel_server(
 
 async fn handle_client(
     config: Arc<ServerConfig>,
-    tunnel: Arc<Mutex<TunnelClient>>,
+    tunnel_state: Arc<TunnelState>,
     stream: TcpStream,
+    req_queue: Arc<MessageQueue>,
+    res_map: Arc<MessageMap>,
 ) -> Result<()> {
-    // Initialize stream connection but need to authenticate first
-    {
-        let mut client = tunnel.lock().await;
-        *client = TunnelClient::with_stream(stream);
+    // Split stream
+    let (reader, writer) = stream.into_split();
+    let tunnel_reader = Arc::new(Mutex::new(TunnelReader::new(reader)));
+    let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::new(writer)));
+
+    let _ = authenticate(config.clone(), tunnel_reader.clone(), tunnel_writer.clone()).await?;
+
+    tunnel_state.verify().await;
+
+    // Once authenticated, spawn two tasks:
+    // 1. Read request queue and write them to client stream
+    // 2. Read client stream and write to response map
+
+    let join_res = tokio::try_join!(
+        handle_requests(tunnel_writer, req_queue),
+        handle_responses(tunnel_reader, res_map)
+    );
+
+    if let Err(e) = join_res {
+        let msg = format!("{}", e);
+        return Err(msg.into());
     }
 
+    Ok(())
+}
+
+async fn authenticate(
+    config: Arc<ServerConfig>,
+    tunnel_reader: Arc<Mutex<TunnelReader>>,
+    tunnel_writer: Arc<Mutex<TunnelWriter>>,
+) -> Result<()> {
     // Wait for client to authenticate
-    match timeout(Duration::from_secs(5), handle_auth(config, tunnel.clone())).await {
+    match timeout(
+        Duration::from_secs(5),
+        handle_auth(config, tunnel_reader.clone(), tunnel_writer.clone()),
+    )
+    .await
+    {
         Ok(res) => match res {
             Ok(_) => Ok(()),
             Err(e) => {
                 let msg = format!("Client authentication failed: {}", e);
                 error!("{}", msg);
-                let mut client = tunnel.lock().await;
+                let mut client = tunnel_writer.lock().await;
                 let _ = client.close().await;
                 Err(msg.into())
             }
@@ -153,15 +214,19 @@ async fn handle_client(
         Err(_) => {
             let msg = "Client connection timeout";
             error!("{}", msg);
-            let mut client = tunnel.lock().await;
+            let mut client = tunnel_writer.lock().await;
             let _ = client.close().await;
             Err(msg.into())
         }
     }
 }
 
-async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>) -> Result<()> {
-    let mut client = tunnel.lock().await;
+async fn handle_auth(
+    config: Arc<ServerConfig>,
+    tunnel_reader: Arc<Mutex<TunnelReader>>,
+    tunnel_writer: Arc<Mutex<TunnelWriter>>,
+) -> Result<()> {
+    let mut client = tunnel_reader.lock().await;
 
     // We don't need a large buffer nor need to read the whole stream
     // as we will only process auth headers here and ignore other requests...
@@ -179,23 +244,26 @@ async fn handle_auth(config: Arc<ServerConfig>, tunnel: Arc<Mutex<TunnelClient>>
 
             if valid_auth(&request, &config.jwt_secret).is_ok() {
                 // Send response to client
-                let ok_msg = TunnelMessage::with_auth_ok();
+                let orig_id = request.id.clone();
+                let ok_msg = TunnelMessage::with_auth_ok(orig_id);
 
-                if let Err(reply_err) = client.write(&ok_msg.into_bytes()).await {
+                let mut writer = tunnel_writer.lock().await;
+                if let Err(reply_err) = writer.write(&ok_msg.into_bytes()).await {
                     let msg = format!("Sending OK reply failed: {}", reply_err);
                     return Err(msg.into());
                 }
 
                 info!("Client authenticated successfully.");
-                client.verify();
                 return Ok(());
             } else {
                 error!("Invalid authorization code.");
 
                 // Send auth failed error to client
-                let err_msg = TunnelMessage::with_auth_unauthorized();
+                let orig_id = request.id.clone();
+                let err_msg = TunnelMessage::with_auth_unauthorized(orig_id);
 
-                if let Err(reply_err) = client.write(&err_msg.into_bytes()).await {
+                let mut writer = tunnel_writer.lock().await;
+                if let Err(reply_err) = writer.write(&err_msg.into_bytes()).await {
                     let msg = format!("Sending Unauthorized reply failed: {}", reply_err);
                     return Err(msg.into());
                 }
@@ -215,5 +283,108 @@ fn valid_auth(request: &TunnelMessage, secret: &str) -> Result<()> {
     match request.webhook_token() {
         Some(token) => verify_auth_token(token, secret),
         None => Err(Error::InvalidAuthToken),
+    }
+}
+
+async fn handle_requests(
+    tunnel_writer: Arc<Mutex<TunnelWriter>>,
+    req_queue: Arc<MessageQueue>,
+) -> Result<()> {
+    loop {
+        let message = req_queue.pop().await;
+        if let Some(msg) = message {
+            let writer_clone = tunnel_writer.clone();
+            tokio::spawn(async move {
+                let mut client = writer_clone.lock().await;
+                if let Err(write_err) = client.write(&msg.into_bytes()).await {
+                    error!("Failed to write to client stream: {}", write_err);
+                }
+            });
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_responses(
+    tunnel_reader: Arc<Mutex<TunnelReader>>,
+    res_queue: Arc<MessageMap>,
+) -> Result<()> {
+    let mut client = tunnel_reader.lock().await;
+
+    // Read from client response
+    let mut buffer = [0; 8192];
+    let mut tunnel_res: Option<TunnelMessage> = None;
+
+    loop {
+        match client.read(&mut buffer).await {
+            Ok(0) => {
+                return Err("No response from connected client".into());
+            }
+            Ok(n) => {
+                if let Some(mut res) = tunnel_res.take() {
+                    // Try to complete the existing message first before accumulating more
+                    let more_pos = res.accumulate_body(&buffer[..n]);
+                    match more_pos {
+                        Some(pos) => {
+                            // Prev messages was completed
+                            res_queue.add(res).await;
+                            tunnel_res = None;
+
+                            // Parse more messages
+                            let msg_res = TunnelMessage::from_large_buffer(&buffer[pos..n]);
+                            match msg_res {
+                                Ok(messages) => {
+                                    for message in messages.into_iter() {
+                                        if message.complete {
+                                            res_queue.add(message).await;
+                                        } else {
+                                            tunnel_res = Some(message);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg =
+                                        format!("Error reading back from connected client: {}", e);
+                                    return Err(msg.into());
+                                }
+                            }
+                        }
+                        None => {
+                            // No more messages
+                            if res.complete {
+                                res_queue.add(res).await;
+                                tunnel_res = None;
+                            } else {
+                                // Large body, read the next buffer
+                                tunnel_res = Some(res);
+                            }
+                        }
+                    }
+                } else {
+                    // This is a fresh buffer
+                    let msg_res = TunnelMessage::from_large_buffer(&buffer[..n]);
+                    match msg_res {
+                        Ok(messages) => {
+                            for message in messages.into_iter() {
+                                if message.complete {
+                                    res_queue.add(message).await;
+                                } else {
+                                    tunnel_res = Some(message);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("Error reading back from connected client: {}", e);
+                            return Err(msg.into());
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("Error reading back from connected client: {}", e);
+                return Err(msg.into());
+            }
+        };
     }
 }

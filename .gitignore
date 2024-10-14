@@ -21,5 +21,10 @@ Cargo.lock
 #.idea/
 
 config-server.toml
+config-server-dev.toml
+config-server-prod.toml
+
 config-client.toml
+config-client-dev.toml
+config-client-prod.toml
 
