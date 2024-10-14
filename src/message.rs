@@ -412,17 +412,28 @@ impl TunnelMessage {
             .map(|(_, v)| v.as_str())
     }
 
-    /// Appends data from a buffer to the body, returns true if body hits EOF
-    pub fn accumulate_body(&mut self, buffer: &[u8]) -> bool {
-        // Just accept the entire buffer as body to detect cut off EOF marker
-        // Detect EOF marker from the entire body instead
-        self.initial_body.extend_from_slice(&buffer);
-        if let Some(len_eof) = len_without_eof_marker(&self.initial_body, self.initial_body.len()) {
-            self.initial_body.truncate(len_eof);
+    /// Appends buffer to the body, returns next message pos if present
+    pub fn accumulate_body(&mut self, buffer: &[u8]) -> Option<usize> {
+        let eof_pos = buffer.windows(MSG_EOF.len()).position(|w| w == MSG_EOF);
+        if let Some(pos) = eof_pos {
+            // Found a marker, consume this range as additional body
+            // This will not incldue the EOF marker it self
+            self.initial_body.extend_from_slice(&buffer[..pos]);
             self.complete = true;
-        }
 
-        self.complete
+            let next_pos = pos + MSG_EOF.len();
+            if next_pos < buffer.len() {
+                return Some(next_pos);
+            } else {
+                // No more message left in this buffer
+                return None;
+            }
+        } else {
+            // No marker found, consume the entire buffer as body
+            // Message is still not complete
+            self.initial_body.extend_from_slice(buffer);
+            return None;
+        }
     }
 
     /// Converts full message into bytes, adding EOF marker at the end

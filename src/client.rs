@@ -188,35 +188,62 @@ async fn handle_requests(
                 info!("{}", decoded);
                 info!("End of decoded content");
                 if let Some(mut res) = tunnel_req.take() {
-                    let complete = res.accumulate_body(&buffer[..n]);
-                    if complete {
-                        req_queue.push(res).await;
+                    // Try to complete the existing message first before accumulating more
+                    let more_pos = res.accumulate_body(&buffer[..n]);
+                    match more_pos {
+                        Some(pos) => {
+                            // Prev messages was completed
+                            req_queue.push(res).await;
+                            tunnel_req = None;
 
-                        // Clear the current request
-                        tunnel_req = None;
-                    } else {
-                        // Continue accumulating
-                        tunnel_req = Some(res);
-                    }
-                } else {
-                    // This is a fresh buffer, read headers
-                    let fresh_buffer = TunnelMessage::from_buffer(&buffer[..n]);
-                    match fresh_buffer {
-                        Ok(res) => {
+                            // Parse more messages
+                            let msg_res = TunnelMessage::from_large_buffer(&buffer[pos..n]);
+                            match msg_res {
+                                Ok(messages) => {
+                                    for message in messages.into_iter() {
+                                        if message.complete {
+                                            req_queue.push(message).await;
+                                        } else {
+                                            tunnel_req = Some(message);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg =
+                                        format!("Error reading back from connected client: {}", e);
+                                    return Err(msg.into());
+                                }
+                            }
+                        }
+                        None => {
+                            // No more messages
                             if res.complete {
                                 req_queue.push(res).await;
-
-                                // Clear the current request
                                 tunnel_req = None;
                             } else {
+                                // Large body, read the next buffer
                                 tunnel_req = Some(res);
                             }
                         }
+                    }
+                } else {
+                    // This is a fresh buffer
+                    let msg_res = TunnelMessage::from_large_buffer(&buffer[..n]);
+                    match msg_res {
+                        Ok(messages) => {
+                            for message in messages.into_iter() {
+                                if message.complete {
+                                    req_queue.push(message).await;
+                                } else {
+                                    tunnel_req = Some(message);
+                                }
+                            }
+                        }
                         Err(e) => {
-                            let msg = format!("Error reading back from connected client: {}", e);
+                            let msg = format!("Error reading back from server: {}", e);
                             return Err(msg.into());
                         }
-                    };
+                    }
                 }
             }
             Err(e) => {
