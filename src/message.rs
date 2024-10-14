@@ -477,11 +477,14 @@ mod tests {
 
     #[test]
     fn test_read_request_with_body() {
+        let id = Uuid::now_v7();
+        let id_header = format!("{}: {}", WEBHOOK_REQ_ID, id.to_string());
         let buffer = format!(
-            "{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
             "POST /webhook HTTP/1.1",
             "Content-Type: application/json",
             "Content-Length: 13",
+            id_header.as_str(),
             "",
             "{\"foo\":\"bar\"}",
         );
@@ -501,29 +504,39 @@ mod tests {
             _ => panic!("Invalid status line"),
         }
 
-        assert_eq!(req.headers.len(), 2);
+        assert_eq!(req.headers.len(), 3);
 
         let mut headers = req.headers.iter();
-        let auth = headers.next().expect("Content type header must be present");
-        assert_eq!(auth.0.as_str(), "content-type");
-        assert_eq!(auth.1.as_str(), "application/json");
+        let ctype = headers.next().expect("Content type header must be present");
+        assert_eq!(ctype.0.as_str(), "content-type");
+        assert_eq!(ctype.1.as_str(), "application/json");
 
-        let ua = headers
+        let clength = headers
             .next()
             .expect("Content length header must be present");
-        assert_eq!(ua.0.as_str(), "content-length");
-        assert_eq!(ua.1.as_str(), "13");
+        assert_eq!(clength.0.as_str(), "content-length");
+        assert_eq!(clength.1.as_str(), "13");
+
+        let req_id = headers
+            .next()
+            .expect("Webhook Request ID header must be present");
+        assert_eq!(req_id.0.as_str(), WEBHOOK_REQ_ID);
+        assert_eq!(req_id.1.as_str(), id.to_string());
 
         assert_eq!(req.initial_body.len(), 13);
     }
 
     #[test]
     fn test_read_response_with_body() {
+        let id = Uuid::now_v7();
+        let id_header = format!("{}: {}", WEBHOOK_REQ_ID, id.to_string());
+
         let buffer = format!(
-            "{}\r\n{}\r\n{}\r\n{}\r\n{}",
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
             "HTTP/1.1 200 OK",
             "Content-Type: application/json",
             "Content-Length: 13",
+            id_header.as_str(),
             "",
             "{\"foo\":\"bar\"}",
         );
@@ -543,18 +556,24 @@ mod tests {
             _ => panic!("Invalid status line"),
         }
 
-        assert_eq!(res.headers.len(), 2);
+        assert_eq!(res.headers.len(), 3);
 
         let mut headers = res.headers.iter();
-        let auth = headers.next().expect("Content type header must be present");
-        assert_eq!(auth.0.as_str(), "content-type");
-        assert_eq!(auth.1.as_str(), "application/json");
+        let ctype = headers.next().expect("Content type header must be present");
+        assert_eq!(ctype.0.as_str(), "content-type");
+        assert_eq!(ctype.1.as_str(), "application/json");
 
-        let ua = headers
+        let clength = headers
             .next()
             .expect("Content length header must be present");
-        assert_eq!(ua.0.as_str(), "content-length");
-        assert_eq!(ua.1.as_str(), "13");
+        assert_eq!(clength.0.as_str(), "content-length");
+        assert_eq!(clength.1.as_str(), "13");
+
+        let req_id = headers
+            .next()
+            .expect("Webhook Request ID header must be present");
+        assert_eq!(req_id.0.as_str(), WEBHOOK_REQ_ID);
+        assert_eq!(req_id.1.as_str(), id.to_string());
 
         assert_eq!(res.initial_body.len(), 13);
     }
