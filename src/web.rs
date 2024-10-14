@@ -178,11 +178,6 @@ fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
         r = r.header(k, v);
     }
 
-    // debug body for excess characters
-    let body = fw_res.initial_body.clone();
-    let text = String::from_utf8_lossy(&body);
-    println!("Body: {}", text);
-
     r.body(Body::from(fw_res.initial_body)).unwrap()
 }
 
