@@ -29,8 +29,6 @@ pub async fn start_client(config: &ClientConfig) {
 
             thread::sleep(Duration::from_secs(10));
         }
-
-        info!("Going into a loop...");
     }
 }
 
@@ -166,7 +164,6 @@ async fn handle_requests(
     // Listen for all forward requests from the server
     // This look should only break if there are errors
     loop {
-        println!("Waiting for messages from server...");
         let read_res = client.read(&mut buffer).await;
 
         match read_res {
@@ -227,11 +224,9 @@ async fn handle_forwards(
     crawler: Client,
 ) -> Result<()> {
     loop {
-        println!("Waiting for forward messages from queue...");
         let maybe_req = req_queue.pop().await;
 
         if let Some(req) = maybe_req {
-            println!("Got some forward request from queue...");
             let tunnel_clone = tunnel.clone();
             let config_clone = config.clone();
             let crawler_clone = crawler.clone();
@@ -252,7 +247,6 @@ async fn handle_forward(
 ) -> Result<()> {
     let res = handle_server_response(crawler, config, message).await?;
     if let Some(forward_res) = res {
-        println!("Sending back response to server...");
         let mut client = tunnel.lock().await;
         if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
             let msg = format!("Unable to send back response: {}", fwr_err);
@@ -325,7 +319,6 @@ async fn forward_request(
     let response = r.send().await;
     match response {
         Ok(res) => {
-            println!("Got response from target...");
             // Build the whole response back into a TunnelMessage
             let version = format!("{:?}", res.version());
             let status_line = StatusLine::Response(ResponseLine::new(
@@ -348,8 +341,6 @@ async fn forward_request(
                 .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_FORWARD_RES.to_string()));
 
             tunnel_res.initial_body = res.bytes().await.unwrap().to_vec();
-
-            println!("returning after capturing the response");
 
             Ok(tunnel_res)
         }

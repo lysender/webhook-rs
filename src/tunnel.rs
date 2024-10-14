@@ -299,12 +299,9 @@ async fn handle_responses(
     loop {
         match client.read(&mut buffer).await {
             Ok(0) => {
-                println!("No response from proxy client");
                 return Err("No response from connected client".into());
             }
             Ok(n) => {
-                println!("Read {} bytes from proxy client.", n);
-
                 if let Some(mut res) = tunnel_res.take() {
                     // Append data to existing body, assuming these are part of the data
                     if res.accumulate_body(&buffer[..n]) {
