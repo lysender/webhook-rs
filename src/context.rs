@@ -70,7 +70,46 @@ impl ServerContext {
 }
 
 pub struct ClientContext {
+    pub config: Arc<ClientConfig>,
     tunnel_state: TunnelState,
     req_queue: MessageQueue,
-    config: ClientConfig,
+}
+
+impl ClientContext {
+    pub fn new(config: ClientConfig) -> Self {
+        Self {
+            tunnel_state: TunnelState::new(),
+            req_queue: MessageQueue::new(),
+            config: Arc::new(config),
+        }
+    }
+
+    pub async fn is_verified(&self) -> bool {
+        self.tunnel_state.is_verified().await
+    }
+
+    pub async fn verify(&self) {
+        self.tunnel_state.verify().await;
+    }
+
+    pub async fn unverify(&self) {
+        self.tunnel_state.reset().await;
+    }
+
+    pub async fn add_request(&self, message: TunnelMessage) {
+        self.req_queue.push(message).await;
+    }
+
+    pub async fn get_request(&self) -> Option<TunnelMessage> {
+        self.req_queue.pop().await
+    }
+
+    pub async fn clear_requests(&self) {
+        self.req_queue.clear().await;
+    }
+
+    pub async fn reset(&self) {
+        self.tunnel_state.reset().await;
+        self.req_queue.clear().await;
+    }
 }

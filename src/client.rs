@@ -9,21 +9,21 @@ use uuid::Uuid;
 
 use tracing::{error, info};
 
+use crate::context::ClientContext;
 use crate::message::ResponseLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage;
 use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD_RES;
 use crate::message::WEBHOOK_TOKEN;
-use crate::queue::MessageQueue;
 use crate::tunnel::TunnelReader;
 use crate::tunnel::TunnelWriter;
 use crate::Error;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
-pub async fn start_client(config: &ClientConfig) {
+pub async fn start_client(ctx: Arc<ClientContext>) {
     loop {
-        let con = { connect(&config).await };
+        let con = { connect(ctx.clone()).await };
 
         if let Err(e) = con {
             error!("Connection error: {}", e);
@@ -34,14 +34,19 @@ pub async fn start_client(config: &ClientConfig) {
     }
 }
 
-async fn connect(config: &ClientConfig) -> Result<()> {
+async fn connect(ctx: Arc<ClientContext>) -> Result<()> {
+    let context = ctx.clone();
+    context.reset().await;
+
+    let config = context.config.clone();
+
     let stream_res = TcpStream::connect(&config.tunnel_address).await;
     let crawler = Client::new();
 
     match stream_res {
         Ok(stream) => {
             info!("Connected to server...");
-            handle_connection(crawler, config, stream).await
+            handle_connection(context, crawler, stream).await
         }
         Err(e) => {
             let connect_err = format!("Error connecting to the server: {}", e);
@@ -51,8 +56,8 @@ async fn connect(config: &ClientConfig) -> Result<()> {
 }
 
 async fn handle_connection(
+    ctx: Arc<ClientContext>,
     crawler: Client,
-    config: &ClientConfig,
     stream: TcpStream,
 ) -> Result<()> {
     info!("Authenticating to server...");
@@ -61,13 +66,13 @@ async fn handle_connection(
     let tunnel_reader = Arc::new(Mutex::new(TunnelReader::new(reader)));
     let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::new(writer)));
 
+    let config = ctx.config.clone();
+
     let _ = authenticate(tunnel_reader.clone(), tunnel_writer.clone(), config).await?;
 
-    let req_queue = Arc::new(MessageQueue::new());
-
     let join_res = tokio::try_join!(
-        handle_requests(tunnel_reader, req_queue.clone()),
-        handle_forwards(tunnel_writer, req_queue, &config, crawler)
+        handle_requests(ctx.clone(), tunnel_reader),
+        handle_forwards(ctx, tunnel_writer, crawler)
     );
 
     if let Err(e) = join_res {
@@ -81,7 +86,7 @@ async fn handle_connection(
 async fn authenticate(
     tunnel_reader: Arc<Mutex<TunnelReader>>,
     tunnel_writer: Arc<Mutex<TunnelWriter>>,
-    config: &ClientConfig,
+    config: Arc<ClientConfig>,
 ) -> Result<()> {
     let id = Uuid::now_v7();
     let token = create_auth_token(&config.jwt_secret)?;
@@ -157,10 +162,7 @@ async fn handle_auth_response(tunnel: Arc<Mutex<TunnelReader>>) -> Result<()> {
     }
 }
 
-async fn handle_requests(
-    tunnel: Arc<Mutex<TunnelReader>>,
-    req_queue: Arc<MessageQueue>,
-) -> Result<()> {
+async fn handle_requests(ctx: Arc<ClientContext>, tunnel: Arc<Mutex<TunnelReader>>) -> Result<()> {
     let mut client = tunnel.lock().await;
     let mut buffer = [0; 8192];
 
@@ -188,7 +190,7 @@ async fn handle_requests(
                     match more_pos {
                         Some(pos) => {
                             // Prev messages was completed
-                            req_queue.push(res).await;
+                            ctx.add_request(res).await;
                             tunnel_req = None;
 
                             // Parse more messages
@@ -197,7 +199,7 @@ async fn handle_requests(
                                 Ok(messages) => {
                                     for message in messages.into_iter() {
                                         if message.complete {
-                                            req_queue.push(message).await;
+                                            ctx.add_request(message).await;
                                         } else {
                                             tunnel_req = Some(message);
                                         }
@@ -213,7 +215,7 @@ async fn handle_requests(
                         None => {
                             // No more messages
                             if res.complete {
-                                req_queue.push(res).await;
+                                ctx.add_request(res).await;
                                 tunnel_req = None;
                             } else {
                                 // Large body, read the next buffer
@@ -228,7 +230,7 @@ async fn handle_requests(
                         Ok(messages) => {
                             for message in messages.into_iter() {
                                 if message.complete {
-                                    req_queue.push(message).await;
+                                    ctx.add_request(message).await;
                                 } else {
                                     tunnel_req = Some(message);
                                 }
@@ -252,20 +254,19 @@ async fn handle_requests(
 }
 
 async fn handle_forwards(
+    ctx: Arc<ClientContext>,
     tunnel: Arc<Mutex<TunnelWriter>>,
-    req_queue: Arc<MessageQueue>,
-    config: &ClientConfig,
     crawler: Client,
 ) -> Result<()> {
     loop {
-        let maybe_req = req_queue.pop().await;
+        let maybe_req = ctx.get_request().await;
 
         if let Some(req) = maybe_req {
             let tunnel_clone = tunnel.clone();
-            let config_clone = config.clone();
+            let config_clone = ctx.config.clone();
             let crawler_clone = crawler.clone();
             tokio::spawn(async move {
-                handle_forward(tunnel_clone, &config_clone, crawler_clone, req).await
+                handle_forward(tunnel_clone, config_clone, crawler_clone, req).await
             });
         }
     }
@@ -275,7 +276,7 @@ async fn handle_forwards(
 
 async fn handle_forward(
     tunnel: Arc<Mutex<TunnelWriter>>,
-    config: &ClientConfig,
+    config: Arc<ClientConfig>,
     crawler: Client,
     message: TunnelMessage,
 ) -> Result<()> {
@@ -293,7 +294,7 @@ async fn handle_forward(
 
 async fn handle_server_response(
     crawler: Client,
-    config: &ClientConfig,
+    config: Arc<ClientConfig>,
     message: TunnelMessage,
 ) -> Result<Option<TunnelMessage>> {
     // Ignore all other types of messages
@@ -308,7 +309,7 @@ async fn handle_server_response(
 
 async fn forward_request(
     crawler: Client,
-    config: &ClientConfig,
+    config: Arc<ClientConfig>,
     message: TunnelMessage,
 ) -> Result<TunnelMessage> {
     let st_opt = match message.status_line {

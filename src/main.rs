@@ -1,6 +1,6 @@
 use clap::Parser;
 use client::start_client;
-use context::ServerContext;
+use context::{ClientContext, ServerContext};
 use queue::{MessageMap, MessageQueue};
 use std::{process, sync::Arc};
 
@@ -68,7 +68,8 @@ async fn run_server(args: &AppArgs) -> Result<()> {
 
 async fn run_client(args: &AppArgs) -> Result<()> {
     let config = ClientConfig::build(args.config.as_path())?;
-    start_client(&config).await;
+    let ctx = Arc::new(ClientContext::new(config));
+    start_client(ctx).await;
 
     Ok(())
 }
