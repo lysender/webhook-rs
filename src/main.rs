@@ -1,10 +1,12 @@
 use clap::Parser;
 use client::start_client;
+use context::ServerContext;
 use queue::{MessageMap, MessageQueue};
 use std::{process, sync::Arc};
 
 mod client;
 mod config;
+mod context;
 mod error;
 mod message;
 mod queue;
@@ -51,21 +53,9 @@ async fn run_command(args: AppArgs) -> Result<()> {
 
 async fn run_server(args: &AppArgs) -> Result<()> {
     let config = ServerConfig::build(args.config.as_path())?;
-    let arc_config = Arc::new(config);
+    let ctx = Arc::new(ServerContext::new(config));
 
-    let tunnel_state = Arc::new(TunnelState::new());
-    let req_queue = Arc::new(MessageQueue::new());
-    let res_map = Arc::new(MessageMap::new());
-
-    let res = tokio::try_join!(
-        start_tunnel_server(
-            arc_config.clone(),
-            tunnel_state.clone(),
-            req_queue.clone(),
-            res_map.clone()
-        ),
-        start_web_server(arc_config, tunnel_state, req_queue, res_map)
-    );
+    let res = tokio::try_join!(start_tunnel_server(ctx.clone()), start_web_server(ctx));
 
     if let Err(e) = res {
         let msg = format!("Error starting servers: {e}");

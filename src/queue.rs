@@ -47,6 +47,14 @@ impl MessageQueue {
             }
         }
     }
+
+    pub async fn clear(&self) {
+        {
+            let mut messages = self.messages.lock().await;
+            messages.clear();
+        }
+        self.notify.notify_waiters();
+    }
 }
 
 impl MessageMap {
@@ -95,5 +103,10 @@ impl MessageMap {
             }
         }
         message
+    }
+
+    pub async fn clear(&self) {
+        let mut messages = self.messages.lock().await;
+        messages.clear();
     }
 }

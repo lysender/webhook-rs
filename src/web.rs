@@ -11,43 +11,27 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
 use uuid::Uuid;
 
-use crate::config::ServerConfig;
+use crate::context::ServerContext;
 use crate::message::RequestLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage;
 use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD;
 use crate::message::WEBHOOK_REQ_ID;
-use crate::queue::MessageMap;
-use crate::queue::MessageQueue;
-use crate::tunnel::TunnelState;
 use crate::Error;
 use crate::Result;
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
-    config: Arc<ServerConfig>,
-    tunnel_state: Arc<TunnelState>,
-    req_queue: Arc<MessageQueue>,
-    res_map: Arc<MessageMap>,
+    ctx: Arc<ServerContext>,
 }
 
-pub async fn start_web_server(
-    config: Arc<ServerConfig>,
-    tunnel_state: Arc<TunnelState>,
-    req_queue: Arc<MessageQueue>,
-    res_map: Arc<MessageMap>,
-) -> Result<()> {
-    let arc_config = config.clone();
+pub async fn start_web_server(ctx: Arc<ServerContext>) -> Result<()> {
+    let arc_config = ctx.config.clone();
     let web_address = arc_config.web_address.clone();
     let webhook_path = arc_config.webhook_path.clone();
 
-    let state = AppState {
-        config: arc_config,
-        tunnel_state: tunnel_state.clone(),
-        req_queue: req_queue.clone(),
-        res_map: res_map.clone(),
-    };
+    let state = AppState { ctx: ctx.clone() };
 
     let wh_path = webhook_path.as_str();
     let routes = if wh_path == "*" {
@@ -110,9 +94,10 @@ async fn fallback_handler() -> Response<Body> {
 }
 
 async fn webhook_handler(state: State<AppState>, request: Request) -> Response<Body> {
+    let ctx = state.ctx.clone();
     let id = Uuid::now_v7();
 
-    if !state.tunnel_state.is_verified().await {
+    if !ctx.is_verified().await {
         return handle_forward_error(None);
     }
 
@@ -148,10 +133,10 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     }
 
     // Push the request to the queue
-    state.req_queue.push(http_req).await;
+    ctx.add_request(http_req).await;
 
     // Wait for response to arrive
-    let tunnel_res = state.res_map.get(&id.as_u128()).await;
+    let tunnel_res = ctx.get_response(&id.as_u128()).await;
 
     match tunnel_res {
         Ok(res) => handle_forward_success(res),

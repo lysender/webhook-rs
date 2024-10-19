@@ -10,12 +10,7 @@ use tokio::{
 };
 use tracing::{error, info};
 
-use crate::{
-    config::ServerConfig,
-    message::TunnelMessage,
-    queue::{MessageMap, MessageQueue},
-    Error,
-};
+use crate::{config::ServerConfig, context::ServerContext, message::TunnelMessage, Error};
 use crate::{token::verify_auth_token, Result};
 
 pub struct TunnelState {
@@ -116,25 +111,17 @@ impl TunnelWriter {
     }
 }
 
-pub async fn start_tunnel_server(
-    config: Arc<ServerConfig>,
-    tunnel_state: Arc<TunnelState>,
-    req_queue: Arc<MessageQueue>,
-    res_map: Arc<MessageMap>,
-) -> Result<()> {
-    let arc_config = config.clone();
+pub async fn start_tunnel_server(ctx: Arc<ServerContext>) -> Result<()> {
+    let config = ctx.config.clone();
 
-    let address = format!("0.0.0.0:{}", arc_config.tunnel_port);
+    let address = format!("0.0.0.0:{}", config.tunnel_port);
     let listener = TcpListener::bind(address.as_str()).await.unwrap();
 
     info!("Webhook tunnel server started at {}", address);
 
     loop {
-        // Reset connection state for new connections
-        {
-            let tc = tunnel_state.clone();
-            tc.reset().await;
-        }
+        // Reset everything for every new connections
+        ctx.reset().await;
 
         info!("Waiting for incoming connections...");
 
@@ -145,14 +132,7 @@ pub async fn start_tunnel_server(
         match res {
             Ok((stream, addr)) => {
                 info!("Connection established: {}", addr);
-                let client_res = handle_client(
-                    arc_config.clone(),
-                    tunnel_state.clone(),
-                    stream,
-                    req_queue.clone(),
-                    res_map.clone(),
-                )
-                .await;
+                let client_res = handle_client(ctx.clone(), stream).await;
                 if let Err(e) = client_res {
                     error!("Error handling client: {}", e);
                 }
@@ -167,29 +147,24 @@ pub async fn start_tunnel_server(
     Ok(())
 }
 
-async fn handle_client(
-    config: Arc<ServerConfig>,
-    tunnel_state: Arc<TunnelState>,
-    stream: TcpStream,
-    req_queue: Arc<MessageQueue>,
-    res_map: Arc<MessageMap>,
-) -> Result<()> {
+async fn handle_client(ctx: Arc<ServerContext>, stream: TcpStream) -> Result<()> {
     // Split stream
     let (reader, writer) = stream.into_split();
     let tunnel_reader = Arc::new(Mutex::new(TunnelReader::new(reader)));
     let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::new(writer)));
 
-    let _ = authenticate(config.clone(), tunnel_reader.clone(), tunnel_writer.clone()).await?;
+    let config = ctx.config.clone();
+    let _ = authenticate(config, tunnel_reader.clone(), tunnel_writer.clone()).await?;
 
-    tunnel_state.verify().await;
+    ctx.verify().await;
 
     // Once authenticated, spawn two tasks:
     // 1. Read request queue and write them to client stream
     // 2. Read client stream and write to response map
 
     let join_res = tokio::try_join!(
-        handle_requests(tunnel_writer, req_queue),
-        handle_responses(tunnel_reader, res_map)
+        handle_requests(ctx.clone(), tunnel_writer),
+        handle_responses(ctx.clone(), tunnel_reader)
     );
 
     if let Err(e) = join_res {
@@ -298,11 +273,11 @@ fn valid_auth(request: &TunnelMessage, secret: &str) -> Result<()> {
 }
 
 async fn handle_requests(
+    ctx: Arc<ServerContext>,
     tunnel_writer: Arc<Mutex<TunnelWriter>>,
-    req_queue: Arc<MessageQueue>,
 ) -> Result<()> {
     loop {
-        let message = req_queue.pop().await;
+        let message = ctx.get_request().await;
         if let Some(msg) = message {
             let writer_clone = tunnel_writer.clone();
             tokio::spawn(async move {
@@ -318,8 +293,8 @@ async fn handle_requests(
 }
 
 async fn handle_responses(
+    ctx: Arc<ServerContext>,
     tunnel_reader: Arc<Mutex<TunnelReader>>,
-    res_queue: Arc<MessageMap>,
 ) -> Result<()> {
     let mut client = tunnel_reader.lock().await;
 
@@ -339,7 +314,7 @@ async fn handle_responses(
                     match more_pos {
                         Some(pos) => {
                             // Prev messages was completed
-                            res_queue.add(res).await;
+                            ctx.add_response(res).await;
                             tunnel_res = None;
 
                             // Parse more messages
@@ -348,7 +323,7 @@ async fn handle_responses(
                                 Ok(messages) => {
                                     for message in messages.into_iter() {
                                         if message.complete {
-                                            res_queue.add(message).await;
+                                            ctx.add_response(message).await;
                                         } else {
                                             tunnel_res = Some(message);
                                         }
@@ -364,7 +339,7 @@ async fn handle_responses(
                         None => {
                             // No more messages
                             if res.complete {
-                                res_queue.add(res).await;
+                                ctx.add_response(res).await;
                                 tunnel_res = None;
                             } else {
                                 // Large body, read the next buffer
@@ -379,7 +354,7 @@ async fn handle_responses(
                         Ok(messages) => {
                             for message in messages.into_iter() {
                                 if message.complete {
-                                    res_queue.add(message).await;
+                                    ctx.add_response(message).await;
                                 } else {
                                     tunnel_res = Some(message);
                                 }
