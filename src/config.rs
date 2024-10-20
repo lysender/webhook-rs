@@ -101,23 +101,25 @@ impl ClientConfig {
     }
 }
 
-/// webhook-rs: A webhook server and client
+/// webhook-rs: Your app's backdoor
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct AppArgs {
     #[command(subcommand)]
     pub command: Commands,
-
-    /// TOML configuration file
-    #[arg(short, long, value_name = "FILE.toml")]
-    pub config: PathBuf,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Runs the Webhook server
-    Server,
+    /// Runs the webhook server
+    Server {
+        config: PathBuf,
+    },
 
-    /// Runs the Webhook client
-    Client,
+    /// Runs the webhook client
+    Client {
+        config: PathBuf,
+    },
+
+    Genkey,
 }

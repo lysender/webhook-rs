@@ -1,8 +1,7 @@
 use clap::Parser;
 use client::start_client;
 use context::{ClientContext, ServerContext};
-use queue::{MessageMap, MessageQueue};
-use std::{process, sync::Arc};
+use std::{path::PathBuf, process, sync::Arc};
 
 mod client;
 mod config;
@@ -21,7 +20,7 @@ use config::{AppArgs, ClientConfig, Commands, ServerConfig, RUST_LOG};
 pub use error::{Error, Result};
 
 use tracing::error;
-use tunnel::{start_tunnel_server, TunnelState};
+use tunnel::start_tunnel_server;
 use web::start_web_server;
 
 #[tokio::main]
@@ -46,13 +45,17 @@ async fn main() {
 
 async fn run_command(args: AppArgs) -> Result<()> {
     match args.command {
-        Commands::Server => run_server(&args).await,
-        Commands::Client => run_client(&args).await,
+        Commands::Server { config } => run_server(config).await,
+        Commands::Client { config } => run_client(config).await,
+        Commands::Genkey => {
+            println!("generate some encryption key here...");
+            Ok(())
+        }
     }
 }
 
-async fn run_server(args: &AppArgs) -> Result<()> {
-    let config = ServerConfig::build(args.config.as_path())?;
+async fn run_server(config_path: PathBuf) -> Result<()> {
+    let config = ServerConfig::build(config_path.as_path())?;
     let ctx = Arc::new(ServerContext::new(config));
 
     let res = tokio::try_join!(start_tunnel_server(ctx.clone()), start_web_server(ctx));
@@ -66,8 +69,8 @@ async fn run_server(args: &AppArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_client(args: &AppArgs) -> Result<()> {
-    let config = ClientConfig::build(args.config.as_path())?;
+async fn run_client(config_path: PathBuf) -> Result<()> {
+    let config = ClientConfig::build(config_path.as_path())?;
     let ctx = Arc::new(ClientContext::new(config));
     start_client(ctx).await;
 
