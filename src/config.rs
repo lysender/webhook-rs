@@ -109,6 +109,22 @@ pub struct AppArgs {
     pub command: Commands,
 }
 
+/// webhook-server: Your app's backdoor
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct ServerAppArgs {
+    #[arg(short, long, value_name = "config.toml")]
+    pub config: PathBuf,
+}
+
+/// webhook-client: Your app's backdoor
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+pub struct ClientAppArgs {
+    #[arg(short, long, value_name = "config.toml")]
+    pub config: PathBuf,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Runs the webhook server

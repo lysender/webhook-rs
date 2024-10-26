@@ -3,16 +3,16 @@ use client::start_client;
 use context::{ClientContext, ServerContext};
 use std::{path::PathBuf, process, sync::Arc};
 
-mod client;
-mod config;
-mod context;
-mod error;
-mod message;
-mod queue;
-mod token;
-mod tunnel;
-mod utils;
-mod web;
+pub mod client;
+pub mod config;
+pub mod context;
+pub mod error;
+pub mod message;
+pub mod queue;
+pub mod token;
+pub mod tunnel;
+pub mod utils;
+pub mod web;
 
 use config::{AppArgs, ClientConfig, Commands, ServerConfig, RUST_LOG};
 
