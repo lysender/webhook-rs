@@ -27,8 +27,16 @@ You need to compile the app using Rust's development tools.
 
 See: https://rustup.rs
 
+Building the server:
+
 ```bash
-cargo build --release
+cargo build --bin webhook-server --release
+```
+
+Building the client:
+
+```bash
+cargo build --bin webhook-client --release
 ```
 
 ## Server
@@ -39,7 +47,7 @@ build it locally and upload to the server.
 If you choose to build locally, make sure your OS is the same with the server.
 
 ```bash
-/path/to/webhook-rs -c config-server.toml server
+/path/to/webhook-server --config config-server.toml
 ```
 
 Configuration (webhook mode):
@@ -65,7 +73,7 @@ jwt_secret = "super-strong-secret"
 Run the app as a client.
 
 ```bash
-/path/to/webhook-rs -c config-client.toml client
+/path/to/webhook-client --config config-client.toml
 ```
 
 Configuration:
@@ -95,6 +103,9 @@ The proxy client/server communication is using basic HTTP/1.1 message
 exchange over TCP without any encryption.
 
 Use it at your own risk.
+
+There is a plan to switch to websockets for client-server connection.
+This will fix the security issue by serving the websocket over HTTPS.
 
 ## Performance
 
