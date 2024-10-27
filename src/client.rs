@@ -11,6 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, timeout};
 use tracing::{error, info};
+use tungstenite::client::IntoClientRequest;
 use uuid::Uuid;
 
 // we will use tungstenite for websocket client impl (same library as what axum is using)
@@ -18,6 +19,8 @@ use tokio_tungstenite::{
     connect_async,
     tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message},
 };
+
+use tungstenite::http::{Method, Request};
 
 use crate::context::ClientContext;
 use crate::message::ResponseLine;
@@ -101,7 +104,7 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
     let start_time = Instant::now();
 
     // Spawn serveral clients
-    let mut clients = (0..10)
+    let mut clients = (0..2)
         .map(|i| tokio::spawn(spawn_client(ctx.clone(), i)))
         .collect::<FuturesUnordered<_>>();
 
@@ -120,7 +123,13 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
 }
 
 async fn spawn_client(ctx: Arc<ClientContext>, who: usize) {
-    let ws_stream = match connect_async(ctx.config.ws_address.as_str()).await {
+    let token = create_auth_token(ctx.config.jwt_secret.as_str()).unwrap();
+    let ws_address = ctx.config.ws_address.clone();
+    let mut req = ws_address.as_str().into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", token.as_str().parse().unwrap());
+
+    let ws_stream = match connect_async(req).await {
         Ok((stream, response)) => {
             println!("Handshake for client {:?} has been completed", who);
             println!("Server response was {:?}", response);

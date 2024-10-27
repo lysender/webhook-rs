@@ -4,7 +4,7 @@ use axum::extract::ws::Message;
 use axum::extract::ws::WebSocket;
 use axum::extract::WebSocketUpgrade;
 use axum::extract::{FromRef, Request, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use axum::routing::any;
@@ -36,6 +36,7 @@ use crate::message::TunnelMessage;
 use crate::message::WEBHOOK_OP;
 use crate::message::WEBHOOK_OP_FORWARD;
 use crate::message::WEBHOOK_REQ_ID;
+use crate::token::verify_auth_token;
 use crate::Error;
 use crate::Result;
 
@@ -201,11 +202,26 @@ fn handle_forward_error(error: Option<Error>) -> Response<Body> {
 }
 
 async fn ws_handler(
+    state: State<AppState>,
     ws: WebSocketUpgrade,
     headers: HeaderMap,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-) -> impl IntoResponse {
+) -> Response<Body> {
+    let ctx = state.ctx.clone();
+
     println!("headers: {:?}", headers);
+    // Find auth token
+    let Some(auth_token) = headers.get("authorization") else {
+        println!("No authorization header found");
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    };
+
+    let secret = ctx.config.jwt_secret.as_str();
+    let auth_token = auth_token.to_str().unwrap();
+    if let Err(_) = verify_auth_token(auth_token, secret) {
+        println!("Invalid authorization token");
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
 
     ws.on_upgrade(move |socket| handle_socket(socket, addr))
 }
