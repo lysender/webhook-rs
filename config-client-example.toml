@@ -1,4 +1,5 @@
 tunnel_address = "127.0.0.1:9001"
+ws_address = "ws://127.0.0.1:9000/_ws"
 target_address = "127.0.0.1:4200"
 target_secure = false 
 jwt_secret = "secret"

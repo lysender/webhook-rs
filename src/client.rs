@@ -1,13 +1,23 @@
+use futures_util::stream::FuturesUnordered;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use reqwest::Method as ReqwestMethod;
+use std::borrow::Cow;
+use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::time::Instant;
 use std::{thread, time::Duration};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
+use tracing::{error, info};
 use uuid::Uuid;
 
-use tracing::{error, info};
+// we will use tungstenite for websocket client impl (same library as what axum is using)
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::protocol::{frame::coding::CloseCode, CloseFrame, Message},
+};
 
 use crate::context::ClientContext;
 use crate::message::ResponseLine;
@@ -22,15 +32,19 @@ use crate::Error;
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
 pub async fn start_client(ctx: Arc<ClientContext>) {
-    loop {
-        let con = { connect(ctx.clone()).await };
-
-        if let Err(e) = con {
-            error!("Connection error: {}", e);
-            info!("Reconnecting in 10 seconds...");
-
-            thread::sleep(Duration::from_secs(10));
-        }
+    //loop {
+    //    let con = { connect(ctx.clone()).await };
+    //
+    //    if let Err(e) = con {
+    //        error!("Connection error: {}", e);
+    //        info!("Reconnecting in 10 seconds...");
+    //
+    //        thread::sleep(Duration::from_secs(10));
+    //    }
+    //}
+    let res = ws_main(ctx).await;
+    if let Err(e) = res {
+        error!("{:?}", e);
     }
 }
 
@@ -81,6 +95,124 @@ async fn handle_connection(
     }
 
     Err("Connection closed.".into())
+}
+
+async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
+    let start_time = Instant::now();
+
+    // Spawn serveral clients
+    let mut clients = (0..10)
+        .map(|i| tokio::spawn(spawn_client(ctx.clone(), i)))
+        .collect::<FuturesUnordered<_>>();
+
+    // Wait for all clients to exit
+    while clients.next().await.is_some() {}
+
+    let end_time = Instant::now();
+
+    println!(
+        "Total time taken {:?} with {} concurrent clients, should be about 6.45 seconds",
+        end_time - start_time,
+        10
+    );
+
+    Ok(())
+}
+
+async fn spawn_client(ctx: Arc<ClientContext>, who: usize) {
+    let ws_stream = match connect_async(ctx.config.ws_address.as_str()).await {
+        Ok((stream, response)) => {
+            println!("Handshake for client {:?} has been completed", who);
+            println!("Server response was {:?}", response);
+            stream
+        }
+        Err(e) => {
+            println!(
+                "Websocket handshake for client {:?} failed with {:?}",
+                who, e
+            );
+            return;
+        }
+    };
+
+    let (mut sender, mut receiver) = ws_stream.split();
+
+    sender
+        .send(Message::Ping("Hello server".into()))
+        .await
+        .expect("Cannot send");
+
+    let mut send_task = tokio::spawn(async move {
+        for i in 1..30 {
+            // In any websocket error, break loop
+            if sender
+                .send(Message::Text(format!("Message number {}...", i)))
+                .await
+                .is_err()
+            {
+                // If send fails, there is nothing we can do but exit
+                return;
+            }
+
+            sleep(Duration::from_millis(3000)).await;
+        }
+    });
+
+    // receiver just prints whatever it receives
+    let mut recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            // Print message and break if told to do so
+            if process_message(msg, who).is_break() {
+                break;
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = (&mut send_task) => {
+            recv_task.abort();
+        },
+        _ = (&mut recv_task) => {
+            send_task.abort();
+        }
+    }
+}
+
+fn process_message(msg: Message, who: usize) -> ControlFlow<(), ()> {
+    match msg {
+        Message::Text(t) => {
+            println!(">>> {who} got str: {t:?}");
+        }
+        Message::Binary(d) => {
+            println!(">>> {} got {} bytes: {:?}", who, d.len(), d);
+        }
+        Message::Close(c) => {
+            if let Some(cf) = c {
+                println!(
+                    ">>> {} got close with code {} and reason `{}`",
+                    who, cf.code, cf.reason
+                );
+            } else {
+                println!(">>> {who} somehow got close message without CloseFrame");
+            }
+            return ControlFlow::Break(());
+        }
+
+        Message::Pong(v) => {
+            println!(">>> {who} got pong with {v:?}");
+        }
+        // Just as with axum server, the underlying tungstenite websocket library
+        // will handle Ping for you automagically by replying with Pong and copying the
+        // v according to spec. But if you need the contents of the pings you can see them here.
+        Message::Ping(v) => {
+            println!(">>> {who} got ping with {v:?}");
+        }
+
+        Message::Frame(_) => {
+            unreachable!("This is never supposed to happen")
+        }
+    }
+    ControlFlow::Continue(())
 }
 
 async fn authenticate(
