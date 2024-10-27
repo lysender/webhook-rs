@@ -1,15 +1,33 @@
 use axum::body::to_bytes;
 use axum::body::Body;
+use axum::extract::ws::Message;
+use axum::extract::ws::WebSocket;
+use axum::extract::WebSocketUpgrade;
 use axum::extract::{FromRef, Request, State};
+use axum::http::HeaderMap;
+use axum::response::IntoResponse;
 use axum::response::Response;
+use axum::routing::any;
 use axum::routing::get;
 use axum::Router;
+use std::borrow::Cow;
+use std::net::SocketAddr;
+use std::ops::ControlFlow;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::time::sleep;
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{info, Level};
 use uuid::Uuid;
+
+//allows to extract the IP of connecting user
+use axum::extract::connect_info::ConnectInfo;
+use axum::extract::ws::CloseFrame;
+
+//allows to split the websocket stream into separate TX and RX branches
+use futures::{sink::SinkExt, stream::StreamExt};
 
 use crate::context::ServerContext;
 use crate::message::RequestLine;
@@ -37,6 +55,7 @@ pub async fn start_web_server(ctx: Arc<ServerContext>) -> Result<()> {
     let routes = if wh_path == "*" {
         // Website mode
         Router::new()
+            .route("/_ws", any(ws_handler))
             .fallback(webhook_handler)
             .with_state(state)
             .layer(
@@ -50,6 +69,7 @@ pub async fn start_web_server(ctx: Arc<ServerContext>) -> Result<()> {
         // Regular webhook mode
         Router::new()
             .route("/", get(index_handler))
+            .route("/_ws", any(ws_handler))
             .route(
                 webhook_path.as_str(),
                 get(webhook_handler)
@@ -72,9 +92,12 @@ pub async fn start_web_server(ctx: Arc<ServerContext>) -> Result<()> {
     info!("HTTP server started at {}", web_address);
 
     let listener = TcpListener::bind(web_address).await.unwrap();
-    axum::serve(listener, routes.into_make_service())
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        routes.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 
     Ok(())
 }
@@ -175,4 +198,146 @@ fn handle_forward_error(error: Option<Error>) -> Response<Body> {
         .status(503)
         .body(Body::from(contents))
         .unwrap()
+}
+
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    println!("headers: {:?}", headers);
+
+    ws.on_upgrade(move |socket| handle_socket(socket, addr))
+}
+
+async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
+    // Send a ping
+    if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
+        println!("Pinged {:?}", who);
+    } else {
+        println!("Could not ping {:?}", who);
+        return;
+    }
+
+    // Wait for a single message fron the client
+    // This blocks until the client sends a message
+    if let Some(msg) = socket.recv().await {
+        if let Ok(msg) = msg {
+            if process_msg(msg, who).is_break() {
+                return;
+            }
+        } else {
+            println!("client {:?} abruptly disconnected", who);
+        }
+    }
+
+    // Send some messages with delay each message
+    for i in 1..5 {
+        if socket
+            .send(Message::Text(format!("Hi {} times!", i)))
+            .await
+            .is_err()
+        {
+            println!("client {:?} abruptly disconnected", who);
+            return;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    // Split reader and writer
+    let (mut sender, mut receiver) = socket.split();
+
+    // Spawn a task to send messages to the client
+    let mut send_task = tokio::spawn(async move {
+        let n_msg = 20;
+        for i in 0..n_msg {
+            // In case of a websocket error, we exit
+            if sender
+                .send(Message::Text(format!("Server message {}", i)))
+                .await
+                .is_err()
+            {
+                return i;
+            }
+
+            sleep(Duration::from_millis(300)).await;
+        }
+
+        println!("Sending close to {:?}", who);
+        if let Err(e) = sender
+            .send(Message::Close(Some(CloseFrame {
+                code: axum::extract::ws::close_code::NORMAL,
+                reason: Cow::from("Goodbye"),
+            })))
+            .await
+        {
+            println!("Coud not send Close due to {:?}, probably it is ok?", e);
+        }
+        n_msg
+    });
+
+    // Second task will receive messages from client and print in server console
+    let mut recv_task = tokio::spawn(async move {
+        let mut cnt = 0;
+        while let Some(Ok(msg)) = receiver.next().await {
+            cnt += 1;
+            if process_msg(msg, who).is_break() {
+                break;
+            }
+        }
+        cnt
+    });
+
+    // If any one of the tasks exit, abort the other
+    tokio::select! {
+        rv_a = (&mut send_task) => {
+            match rv_a {
+                Ok(a) => println!("{:?} messages sent to {:?}", a, who),
+                Err(e) => println!("Error sending messages {:?}", e)
+            }
+            recv_task.abort();
+        }
+        rv_b = (&mut recv_task) => {
+            match rv_b {
+                Ok(b) => println!("Received {:?} messages", b),
+                Err(e) => println!("Error receiving messages {:?}", e)
+            }
+            send_task.abort();
+        }
+    }
+
+    // Returning from the handler closes the websocket connection
+    println!("Websocket context {:?} closed", who);
+}
+
+fn process_msg(msg: Message, who: SocketAddr) -> ControlFlow<(), ()> {
+    match msg {
+        Message::Text(t) => {
+            println!(">>> {:?} sent str: {:?}", who, t);
+        }
+        Message::Binary(b) => {
+            println!(">>> {:?} sent {} bytes: {:?}", who, b.len(), b);
+        }
+        Message::Close(c) => {
+            if let Some(cf) = c {
+                println!(
+                    ">>> {:?} sent close with code {} and reason {}",
+                    who, cf.code, cf.reason
+                );
+            } else {
+                println!(
+                    ">>> {:?} somehow sent close message without CloseFrame",
+                    who
+                );
+            }
+        }
+        Message::Pong(v) => {
+            println!(">>> {:?} send pong with {:?}", who, v);
+        }
+        Message::Ping(v) => {
+            // You should not handle ping manually but let's just inspect its message here for now
+            println!(">>> {:?} sent ping with {:?}", who, v);
+        }
+    }
+    ControlFlow::Continue(())
 }
