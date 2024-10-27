@@ -19,7 +19,7 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 use uuid::Uuid;
 
 //allows to extract the IP of connecting user
@@ -30,7 +30,7 @@ use axum::extract::ws::CloseFrame;
 use futures::{sink::SinkExt, stream::StreamExt};
 
 use crate::context::ServerContext;
-use crate::message::RequestLine;
+use crate::message::HttpLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage;
 use crate::message::WEBHOOK_OP;
@@ -129,11 +129,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     let method = request.method().to_string();
 
     // Build original request
-    let http_st = StatusLine::Request(RequestLine::new(
-        method.clone(),
-        uri,
-        "HTTP/1.1".to_string(),
-    ));
+    let http_st = StatusLine::Request(HttpLine::new(method.clone(), uri, "HTTP/1.1".to_string()));
     let mut http_req = TunnelMessage::new(id, http_st);
 
     // Add original headers
@@ -223,15 +219,15 @@ async fn ws_handler(
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, addr))
+    ws.on_upgrade(move |socket| handle_socket(ctx.clone(), socket, addr))
 }
 
-async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
+async fn handle_socket(ctx: Arc<ServerContext>, mut socket: WebSocket, who: SocketAddr) {
     // Send a ping
     if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
-        println!("Pinged {:?}", who);
+        info!("Pinged {:?}", who);
     } else {
-        println!("Could not ping {:?}", who);
+        error!("Could not ping {:?}, closing connection", who);
         return;
     }
 

@@ -5,15 +5,15 @@ use tokio::{
 };
 use tracing::error;
 
-use crate::{message::TunnelMessage, Result};
+use crate::{message::TunnelMessage2, Result};
 
 pub struct MessageMap {
-    messages: Mutex<HashMap<u128, TunnelMessage>>,
+    messages: Mutex<HashMap<u128, TunnelMessage2>>,
     notify: Notify,
 }
 
 pub struct MessageQueue {
-    messages: Mutex<VecDeque<TunnelMessage>>,
+    messages: Mutex<VecDeque<TunnelMessage2>>,
     notify: Notify,
 }
 
@@ -25,7 +25,7 @@ impl MessageQueue {
         }
     }
 
-    pub async fn push(&self, message: TunnelMessage) {
+    pub async fn push(&self, message: TunnelMessage2) {
         {
             let mut messages = self.messages.lock().await;
             messages.push_back(message);
@@ -33,7 +33,7 @@ impl MessageQueue {
         self.notify.notify_waiters();
     }
 
-    pub async fn pop(&self) -> Option<TunnelMessage> {
+    pub async fn pop(&self) -> Option<TunnelMessage2> {
         let maybe_message = {
             let mut messages = self.messages.lock().await;
             messages.pop_front()
@@ -65,18 +65,18 @@ impl MessageMap {
         }
     }
 
-    pub async fn add(&self, message: TunnelMessage) {
+    pub async fn add(&self, message: TunnelMessage2) {
         {
             let mut messages = self.messages.lock().await;
-            let id = message.id.as_u128();
+            let id = message.header.id.as_u128();
             messages.insert(id, message);
         }
         self.notify.notify_waiters();
     }
 
-    pub async fn get(&self, id: &u128) -> Result<TunnelMessage> {
-        // Try to get the message within 15 seconds and give up after that
-        match timeout(Duration::from_secs(15), self.get_inner(id)).await {
+    pub async fn get(&self, id: &u128) -> Result<TunnelMessage2> {
+        // Try to get the message within 10 seconds and give up after that
+        match timeout(Duration::from_secs(10), self.get_inner(id)).await {
             Ok(res) => Ok(res.expect("Message must be present in the map.")),
             Err(_) => {
                 let msg = "Message map getter timeout.";
@@ -86,9 +86,9 @@ impl MessageMap {
         }
     }
 
-    async fn get_inner(&self, id: &u128) -> Option<TunnelMessage> {
+    async fn get_inner(&self, id: &u128) -> Option<TunnelMessage2> {
         // Keep trying to get the message until it becomes available
-        let message: Option<TunnelMessage>;
+        let message: Option<TunnelMessage2>;
         loop {
             let maybe_message = {
                 let mut messages = self.messages.lock().await;

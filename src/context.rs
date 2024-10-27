@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     config::{ClientConfig, ServerConfig},
-    message::TunnelMessage,
+    message::TunnelMessage2,
     queue::{MessageMap, MessageQueue},
     tunnel::TunnelState,
     Result,
@@ -38,11 +38,11 @@ impl ServerContext {
         self.tunnel_state.reset().await;
     }
 
-    pub async fn add_request(&self, message: TunnelMessage) {
+    pub async fn add_request(&self, message: TunnelMessage2) {
         self.req_queue.push(message).await;
     }
 
-    pub async fn get_request(&self) -> Option<TunnelMessage> {
+    pub async fn get_request(&self) -> Option<TunnelMessage2> {
         self.req_queue.pop().await
     }
 
@@ -50,11 +50,11 @@ impl ServerContext {
         self.req_queue.clear().await;
     }
 
-    pub async fn add_response(&self, message: TunnelMessage) {
+    pub async fn add_response(&self, message: TunnelMessage2) {
         self.res_map.add(message).await;
     }
 
-    pub async fn get_response(&self, id: &u128) -> Result<TunnelMessage> {
+    pub async fn get_response(&self, id: &u128) -> Result<TunnelMessage2> {
         self.res_map.get(id).await
     }
 
@@ -96,11 +96,11 @@ impl ClientContext {
         self.tunnel_state.reset().await;
     }
 
-    pub async fn add_request(&self, message: TunnelMessage) {
+    pub async fn add_request(&self, message: TunnelMessage2) {
         self.req_queue.push(message).await;
     }
 
-    pub async fn get_request(&self) -> Option<TunnelMessage> {
+    pub async fn get_request(&self) -> Option<TunnelMessage2> {
         self.req_queue.pop().await
     }
 

@@ -20,6 +20,57 @@ pub const WEBHOOK_OP_AUTH_RES: &'static str = "auth-res";
 pub const WEBHOOK_OP_FORWARD: &'static str = "forward";
 pub const WEBHOOK_OP_FORWARD_RES: &'static str = "forward-res";
 
+// Tunnel message format
+// Mesages are sent via websocket connection
+// All binary messages from the server are assumed to be webhook requests
+// All binary messages from the client are assumed to be webhook responses
+// Each messages has a custom header line that looks like this:
+//  WH/1.0 <message-id>\r\n
+// The rest of the message contains the usual HTTP headers and body
+#[derive(Debug)]
+pub struct WebhookHeader {
+    pub version: String,
+    pub id: Uuid,
+}
+
+impl WebhookHeader {
+    pub fn new(id: Uuid) -> Self {
+        Self {
+            version: "WH/1.0".to_string(),
+            id,
+        }
+    }
+
+    pub fn parse_str(line: &str) -> Result<Self> {
+        let mut parts = line.split_whitespace();
+        let Some(version) = parts.next() else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+        if version != "WH/1.0" {
+            return Err(Error::TunnelMessageInvalid);
+        }
+        let Some(id) = parts.next() else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+
+        let Ok(id) = Uuid::parse_str(id) else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+        Ok(WebhookHeader {
+            version: version.to_string(),
+            id,
+        })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!("{} {}\r\n", self.version, self.id.to_string())
+    }
+
+    pub fn into_bytes(&self) -> Vec<u8> {
+        self.to_string().into_bytes()
+    }
+}
+
 #[derive(Debug)]
 struct BufferHeader {
     data: String,
@@ -29,13 +80,13 @@ struct BufferHeader {
 type HeaderItem = (String, String);
 
 #[derive(Debug)]
-pub struct RequestLine {
+pub struct HttpLine {
     pub method: String,
     pub path: String,
     pub version: String,
 }
 
-impl RequestLine {
+impl HttpLine {
     pub fn new(method: String, path: String, version: String) -> Self {
         Self {
             method,
@@ -55,7 +106,7 @@ impl RequestLine {
         let Some(version) = parts.next() else {
             return Err(Error::RequestLineInvalid("Version missing".to_string()));
         };
-        Ok(RequestLine {
+        Ok(HttpLine {
             method: method.to_string(),
             path: path.to_string(),
             version: version.to_string(),
@@ -122,7 +173,7 @@ impl ResponseLine {
 
 #[derive(Debug)]
 pub enum StatusLine {
-    Request(RequestLine),
+    Request(HttpLine),
     Response(ResponseLine),
 }
 
@@ -165,7 +216,7 @@ fn parse_status_line(line: &str) -> Result<StatusLine> {
 
     match first {
         "GET" | "POST" | "PUT" | "PATCH" | "DELETE" => {
-            let st = RequestLine::parse(line)?;
+            let st = HttpLine::parse(line)?;
             Ok(StatusLine::Request(st))
         }
         "HTTP/1.1" | "HTTP/1.0" => {
@@ -174,6 +225,102 @@ fn parse_status_line(line: &str) -> Result<StatusLine> {
             Ok(StatusLine::Response(st))
         }
         _ => Err(Error::TunnelStatusLineInvalid),
+    }
+}
+
+#[derive(Debug)]
+pub struct TunnelMessage2 {
+    pub header: WebhookHeader,
+    pub http_line: StatusLine,
+    pub http_headers: Vec<HeaderItem>,
+    pub http_body: Vec<u8>,
+}
+
+impl TunnelMessage2 {
+    pub fn new(header: WebhookHeader, http_line: StatusLine) -> Self {
+        Self {
+            header,
+            http_line,
+            http_headers: Vec::new(),
+            http_body: Vec::new(),
+        }
+    }
+
+    /// Parse the buffer for http headers and/or body
+    pub fn from_buffer(buffer: &[u8]) -> Result<Self> {
+        let buflen = buffer.len();
+
+        let Some(buff_header) = read_buffer_header(&buffer[..buflen]) else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+
+        let mut lines = buff_header.data.lines();
+
+        // First line is the webhook header
+        let Some(header) = lines.next() else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+        let Ok(header) = WebhookHeader::parse_str(header.trim()) else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+        let Some(http_line) = lines.next() else {
+            return Err(Error::TunnelMessageInvalid);
+        };
+        let http_line = parse_status_line(http_line.trim())?;
+
+        let mut http_headers: Vec<HeaderItem> = Vec::new();
+
+        // Read the rest of the headers
+        for line in lines {
+            let h_line = line.trim();
+            if h_line.len() >= 3 {
+                if let Some((k, v)) = h_line.split_once(":") {
+                    http_headers.push((k.to_lowercase(), v.trim().to_string()));
+                }
+            }
+        }
+
+        let mut http_body: Vec<u8> = Vec::new();
+        if let Some(b_start) = buff_header.body_start {
+            // Consume the rest of the content as body
+            http_body.extend_from_slice(&buffer[b_start..buflen]);
+        }
+
+        Ok(Self {
+            header,
+            http_line,
+            http_headers,
+            http_body,
+        })
+    }
+
+    pub fn id(&self) -> String {
+        self.header.id.to_string()
+    }
+
+    /// Converts full message into bytes, adding EOF marker at the end
+    pub fn into_bytes(&self) -> Vec<u8> {
+        let mut buffer: Vec<u8> = Vec::new();
+
+        // Webhook header
+        buffer.extend_from_slice(&self.header.into_bytes());
+
+        // Request line
+        buffer.extend_from_slice(&self.http_line.into_bytes());
+
+        // Headers
+        for (k, v) in self.http_headers.iter() {
+            let header_line = format!("{}: {}\r\n", k, v);
+            buffer.extend_from_slice(&header_line.as_bytes());
+        }
+
+        // If there is a body, insert a blank line then the body
+        if self.http_body.len() > 0 {
+            buffer.extend_from_slice(b"\r\n");
+            buffer.extend_from_slice(&self.http_body);
+        }
+
+        buffer
     }
 }
 
@@ -200,7 +347,7 @@ impl TunnelMessage {
 
     /// Creates an auth request message
     pub fn with_auth_token(id: Uuid, token: String) -> Self {
-        let st = StatusLine::Request(RequestLine::new(
+        let st = StatusLine::Request(HttpLine::new(
             "POST".to_string(),
             WEBHOOK_OP_AUTH_PATH.to_string(),
             "HTTP/1.1".to_string(),
@@ -701,6 +848,7 @@ mod tests {
         assert!(msg2.complete);
     }
 
+    #[test]
     fn test_multiple_messages_last_incomplete() {
         let eof = String::from_utf8_lossy(MSG_EOF).to_string();
 
