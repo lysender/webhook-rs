@@ -4,7 +4,6 @@ use tracing::error;
 
 use webhook_rs::config::{ServerAppArgs, ServerConfig, RUST_LOG};
 use webhook_rs::context::ServerContext;
-use webhook_rs::tunnel::start_tunnel_server;
 use webhook_rs::web::start_web_server;
 use webhook_rs::{Error, Result};
 
@@ -32,9 +31,7 @@ async fn run_command(args: ServerAppArgs) -> Result<()> {
     let config = ServerConfig::build(args.config.as_path())?;
     let ctx = Arc::new(ServerContext::new(config));
 
-    let res = tokio::try_join!(start_tunnel_server(ctx.clone()), start_web_server(ctx));
-
-    if let Err(e) = res {
+    if let Err(e) = start_web_server(ctx).await {
         let msg = format!("Error starting servers: {e}");
         error!("{}", msg);
         return Err(Error::AnyError(msg));

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use serde::Deserialize;
 use std::{
     fs,
@@ -20,6 +20,7 @@ pub struct ServerConfig {
 #[derive(Clone, Deserialize)]
 pub struct ClientConfig {
     pub tunnel_address: String,
+    pub ws_address: String,
     pub target_address: String,
     pub target_secure: bool,
     pub jwt_secret: String,
@@ -85,6 +86,12 @@ impl ClientConfig {
             ));
         }
 
+        if config.ws_address.len() == 0 {
+            return Err(Error::ConfigInvalidError(
+                "Websocket address must not be empty.".to_string(),
+            ));
+        }
+
         if config.target_address.len() == 0 {
             return Err(Error::ConfigInvalidError(
                 "Target application host must not be empty.".to_string(),
@@ -101,14 +108,6 @@ impl ClientConfig {
     }
 }
 
-/// webhook-rs: Your app's backdoor
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct AppArgs {
-    #[command(subcommand)]
-    pub command: Commands,
-}
-
 /// webhook-server: Your app's backdoor
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -123,19 +122,4 @@ pub struct ServerAppArgs {
 pub struct ClientAppArgs {
     #[arg(short, long, value_name = "config.toml")]
     pub config: PathBuf,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Runs the webhook server
-    Server {
-        config: PathBuf,
-    },
-
-    /// Runs the webhook client
-    Client {
-        config: PathBuf,
-    },
-
-    Genkey,
 }

@@ -1,318 +1,247 @@
+use futures::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use reqwest::Method as ReqwestMethod;
+use std::ops::ControlFlow;
 use std::sync::Arc;
-use std::{thread, time::Duration};
+use std::time::Duration;
+use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::timeout;
-use uuid::Uuid;
-
+use tokio::time::sleep;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tracing::{error, info};
+use tungstenite::client::IntoClientRequest;
+
+// we will use tungstenite for websocket client impl (same library as what axum is using)
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::context::ClientContext;
-use crate::message::ResponseLine;
-use crate::message::StatusLine;
-use crate::message::TunnelMessage;
-use crate::message::WEBHOOK_OP;
-use crate::message::WEBHOOK_OP_FORWARD_RES;
-use crate::message::WEBHOOK_TOKEN;
-use crate::tunnel::TunnelReader;
-use crate::tunnel::TunnelWriter;
-use crate::Error;
+use crate::message::{ResponseLine, TunnelMessage};
+use crate::message::{StatusLine, WebhookHeader};
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
-pub async fn start_client(ctx: Arc<ClientContext>) {
-    loop {
-        let con = { connect(ctx.clone()).await };
-
-        if let Err(e) = con {
-            error!("Connection error: {}", e);
-            info!("Reconnecting in 10 seconds...");
-
-            thread::sleep(Duration::from_secs(10));
-        }
-    }
+pub struct ClientTunnelReceiver {
+    stream: Option<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
 }
 
-async fn connect(ctx: Arc<ClientContext>) -> Result<()> {
-    let context = ctx.clone();
-    context.reset().await;
-
-    let config = context.config.clone();
-
-    let stream_res = TcpStream::connect(&config.tunnel_address).await;
-    let crawler = Client::new();
-
-    match stream_res {
-        Ok(stream) => {
-            info!("Connected to server...");
-            handle_connection(context, crawler, stream).await
-        }
-        Err(e) => {
-            let connect_err = format!("Error connecting to the server: {}", e);
-            Err(connect_err.into())
-        }
-    }
-}
-
-async fn handle_connection(
-    ctx: Arc<ClientContext>,
-    crawler: Client,
-    stream: TcpStream,
-) -> Result<()> {
-    info!("Authenticating to server...");
-
-    let (reader, writer) = stream.into_split();
-    let tunnel_reader = Arc::new(Mutex::new(TunnelReader::new(reader)));
-    let tunnel_writer = Arc::new(Mutex::new(TunnelWriter::new(writer)));
-
-    let config = ctx.config.clone();
-
-    let _ = authenticate(tunnel_reader.clone(), tunnel_writer.clone(), config).await?;
-
-    let join_res = tokio::try_join!(
-        handle_requests(ctx.clone(), tunnel_reader),
-        handle_forwards(ctx, tunnel_writer, crawler)
-    );
-
-    if let Err(e) = join_res {
-        let msg = format!("{}", e);
-        return Err(msg.into());
-    }
-
-    Err("Connection closed.".into())
-}
-
-async fn authenticate(
-    tunnel_reader: Arc<Mutex<TunnelReader>>,
-    tunnel_writer: Arc<Mutex<TunnelWriter>>,
-    config: Arc<ClientConfig>,
-) -> Result<()> {
-    let id = Uuid::now_v7();
-    let token = create_auth_token(&config.jwt_secret)?;
-    let auth_req = TunnelMessage::with_auth_token(id, token);
-
-    {
-        let mut writer = tunnel_writer.lock().await;
-        let write_res = writer.write(&auth_req.into_bytes()).await;
-
-        if let Err(write_err) = write_res {
-            let msg = format!("Authenticating to server failed: {}", write_err);
-            return Err(msg.into());
+impl ClientTunnelReceiver {
+    pub fn new(stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>) -> Self {
+        Self {
+            stream: Some(stream),
         }
     }
 
-    // Wait for server to respond to auth request
-    let auth_res = timeout(
-        Duration::from_secs(5),
-        handle_auth_response(tunnel_reader.clone()),
-    )
-    .await;
-
-    match auth_res {
-        Ok(res) => match res {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                let msg = format!("Authentication to server failed: {}", e);
-                error!("{}", msg);
-                let mut writer = tunnel_writer.lock().await;
-                let _ = writer.close().await;
-                Err(msg.into())
-            }
-        },
-        Err(_) => {
-            let msg = "Server connection timeout";
-            error!("{}", msg);
-            let mut writer = tunnel_writer.lock().await;
-            let _ = writer.close().await;
-            Err(msg.into())
-        }
-    }
-}
-
-async fn handle_auth_response(tunnel: Arc<Mutex<TunnelReader>>) -> Result<()> {
-    let mut client = tunnel.lock().await;
-
-    // Authentication exchange should fit in 4k buffer
-    // No need to accumulate the whole stream message
-    let mut buffer = [0; 4096];
-
-    info!("Waiting for server response...");
-
-    match client.read(&mut buffer).await {
-        Ok(0) => Err("Connection from client closed.".into()),
-        Ok(n) => {
-            // Strip off the EOF marker
-            let request = TunnelMessage::from_buffer(&buffer[..n])?;
-            if !request.is_auth_response() {
-                return Err("Invalid tunnel auth response.".into());
-            }
-
-            if request.status_line.is_ok() {
-                info!("Authentication to server successful.");
-                return Ok(());
-            }
-            Err("Authentication to server failed.".into())
-        }
-        Err(e) => {
-            let msg = format!("Failed to read from client stream: {}", e);
-            error!("{}", msg);
-            Err(msg.into())
-        }
-    }
-}
-
-async fn handle_requests(ctx: Arc<ClientContext>, tunnel: Arc<Mutex<TunnelReader>>) -> Result<()> {
-    let mut client = tunnel.lock().await;
-    let mut buffer = [0; 8192];
-
-    // Accumulate stream data by looping over incoming message parts
-    let mut tunnel_req: Option<TunnelMessage> = None;
-    let client_error: Error;
-
-    // Listen for all forward requests from the server
-    // This look should only break if there are errors
-    loop {
-        let read_res = client.read(&mut buffer).await;
-
-        match read_res {
-            Ok(0) => {
-                let error_msg = "No data received from server.";
-                info!("{}", error_msg);
-                client_error = error_msg.into();
-                break;
-            }
-            Ok(n) => {
-                // Debug body
-                if let Some(mut res) = tunnel_req.take() {
-                    // Try to complete the existing message first before accumulating more
-                    let more_pos = res.accumulate_body(&buffer[..n]);
-                    match more_pos {
-                        Some(pos) => {
-                            // Prev messages was completed
-                            ctx.add_request(res).await;
-                            tunnel_req = None;
-
-                            // Parse more messages
-                            let msg_res = TunnelMessage::from_large_buffer(&buffer[pos..n]);
-                            match msg_res {
-                                Ok(messages) => {
-                                    for message in messages.into_iter() {
-                                        if message.complete {
-                                            ctx.add_request(message).await;
-                                        } else {
-                                            tunnel_req = Some(message);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    let msg =
-                                        format!("Error reading back from connected client: {}", e);
-                                    return Err(msg.into());
-                                }
-                            }
-                        }
-                        None => {
-                            // No more messages
-                            if res.complete {
-                                ctx.add_request(res).await;
-                                tunnel_req = None;
-                            } else {
-                                // Large body, read the next buffer
-                                tunnel_req = Some(res);
-                            }
-                        }
-                    }
-                } else {
-                    // This is a fresh buffer
-                    let msg_res = TunnelMessage::from_large_buffer(&buffer[..n]);
-                    match msg_res {
-                        Ok(messages) => {
-                            for message in messages.into_iter() {
-                                if message.complete {
-                                    ctx.add_request(message).await;
-                                } else {
-                                    tunnel_req = Some(message);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            let msg = format!("Error reading back from server: {}", e);
-                            return Err(msg.into());
-                        }
+    pub async fn read(&mut self) -> Option<Result<Message>> {
+        if let Some(stream) = self.stream.as_mut() {
+            if let Some(res) = stream.next().await {
+                match res {
+                    Ok(msg) => return Some(Ok(msg)),
+                    Err(e) => {
+                        let msg = format!("Error reading message: {}", e);
+                        return Some(Err(msg.into()));
                     }
                 }
             }
-            Err(e) => {
-                let msg = format!("Failed to read from server stream: {}", e);
-                return Err(msg.into());
-            }
+        }
+        None
+    }
+}
+
+pub struct ClientTunnelSender {
+    stream: Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
+}
+
+impl ClientTunnelSender {
+    pub fn new(stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>) -> Self {
+        Self {
+            stream: Some(stream),
         }
     }
 
-    Err(client_error)
+    pub async fn send(&mut self, msg: Message) -> Result<()> {
+        if let Some(stream) = self.stream.as_mut() {
+            if let Err(e) = stream.send(msg).await {
+                let msg = format!("Error sending message: {e}");
+                return Err(msg.into());
+            }
+        }
+        Ok(())
+    }
 }
 
-async fn handle_forwards(
+pub async fn start_client(ctx: Arc<ClientContext>) {
+    loop {
+        let ctx_clone = ctx.clone();
+        let res = ws_main(ctx_clone).await;
+        if let Err(e) = res {
+            error!("{}", e);
+        }
+
+        info!("Reconnecting in 10 seconds...");
+        sleep(Duration::from_secs(10)).await;
+    }
+}
+
+async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
+    let token = create_auth_token(ctx.config.jwt_secret.as_str()).unwrap();
+    let ws_address = ctx.config.ws_address.clone();
+    let mut req = ws_address.as_str().into_client_request().unwrap();
+    req.headers_mut()
+        .insert("authorization", token.as_str().parse().unwrap());
+
+    let ws_stream = match connect_async(req).await {
+        Ok((stream, _response)) => stream,
+        Err(e) => {
+            let error = format!("Websocket handshake for client failed with {}", e);
+            return Err(error.into());
+        }
+    };
+
+    info!("Connected to websocket server.");
+
+    let crawler = Client::new();
+    let (sender, receiver) = ws_stream.split();
+    let tunnel_receiver = Arc::new(Mutex::new(ClientTunnelReceiver::new(receiver)));
+    let tunnel_sender = Arc::new(Mutex::new(ClientTunnelSender::new(sender)));
+
+    let res = tokio::try_join!(
+        ping_task(ctx.clone(), tunnel_sender.clone()),
+        send_task(ctx.clone(), tunnel_sender, crawler),
+        recv_task(ctx.clone(), tunnel_receiver)
+    );
+
+    if let Err(e) = res {
+        let msg = format!("{}", e);
+        error!("{}", msg);
+    }
+
+    Err("Websocket client exited.".into())
+}
+
+async fn ping_task(ctx: Arc<ClientContext>, sender: Arc<Mutex<ClientTunnelSender>>) -> Result<()> {
+    loop {
+        if ctx.is_stale_connection(Instant::now()).await {
+            error!("Connection is stale. Terminating.");
+            break;
+        }
+
+        // Send a ping message
+        let res = {
+            let mut stream = sender.lock().await;
+            stream.send(Message::Ping("PING".into())).await
+        };
+
+        if let Err(e) = res {
+            let msg = format!("Error sending ping: {}", e);
+            error!("{}", msg);
+            break;
+        }
+
+        // Send another in 60 seconds
+        sleep(Duration::from_secs(60)).await;
+    }
+
+    Err("Ping task exited.".into())
+}
+
+async fn send_task(
     ctx: Arc<ClientContext>,
-    tunnel: Arc<Mutex<TunnelWriter>>,
+    sender: Arc<Mutex<ClientTunnelSender>>,
     crawler: Client,
 ) -> Result<()> {
     loop {
         let maybe_req = ctx.get_request().await;
-
-        if let Some(req) = maybe_req {
-            let tunnel_clone = tunnel.clone();
-            let config_clone = ctx.config.clone();
+        if let Some(message) = maybe_req {
+            let ctx_clone = ctx.clone();
             let crawler_clone = crawler.clone();
+            let sender_clone = sender.clone();
             tokio::spawn(async move {
-                handle_forward(tunnel_clone, config_clone, crawler_clone, req).await
+                handle_forward(ctx_clone, crawler_clone, sender_clone, message).await
             });
-        }
-    }
-
-    Err("Forwarding loop exited.".into())
-}
-
-async fn handle_forward(
-    tunnel: Arc<Mutex<TunnelWriter>>,
-    config: Arc<ClientConfig>,
-    crawler: Client,
-    message: TunnelMessage,
-) -> Result<()> {
-    let res = handle_server_response(crawler, config, message).await?;
-    if let Some(forward_res) = res {
-        let mut client = tunnel.lock().await;
-        if let Err(fwr_err) = client.write(&forward_res.into_bytes()).await {
-            let msg = format!("Unable to send back response: {}", fwr_err);
-            error!("{}", msg);
         }
     }
 
     Ok(())
 }
 
-async fn handle_server_response(
-    crawler: Client,
-    config: Arc<ClientConfig>,
-    message: TunnelMessage,
-) -> Result<Option<TunnelMessage>> {
-    // Ignore all other types of messages
-    if message.is_forward() {
-        // Handle webhook requests
-        let f_res = forward_request(crawler, config, message).await?;
-        return Ok(Some(f_res));
+async fn recv_task(
+    ctx: Arc<ClientContext>,
+    receiver: Arc<Mutex<ClientTunnelReceiver>>,
+) -> Result<()> {
+    loop {
+        let received = {
+            let mut tunnel = receiver.lock().await;
+            tunnel.read().await
+        };
+
+        if let Some(received_res) = received {
+            match received_res {
+                Ok(msg) => {
+                    let res = handle_ws_message(ctx.clone(), msg).await;
+                    if res.is_break() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{}", e);
+                    error!("{}", msg);
+                    break;
+                }
+            }
+        }
     }
 
-    Ok(None)
+    Err("Websocket receiver task exited.".into())
 }
 
-async fn forward_request(
+async fn handle_ws_message(ctx: Arc<ClientContext>, msg: Message) -> ControlFlow<()> {
+    match msg {
+        Message::Pong(_) => {
+            ctx.update_pong(Instant::now()).await;
+            ControlFlow::Continue(())
+        }
+        Message::Binary(b) => match TunnelMessage::from_buffer(&b[..]) {
+            Ok(message) => {
+                ctx.add_request(message).await;
+                ControlFlow::Continue(())
+            }
+            Err(e) => {
+                error!("Failed to parse binary message: {}", e);
+                ControlFlow::Continue(())
+            }
+        },
+        Message::Close(_) => ControlFlow::Break(()),
+        _ => ControlFlow::Continue(()),
+    }
+}
+
+async fn handle_forward(
+    ctx: Arc<ClientContext>,
+    crawler: Client,
+    sender: Arc<Mutex<ClientTunnelSender>>,
+    message: TunnelMessage,
+) -> Result<()> {
+    let res = handle_target_response(crawler, ctx.config.clone(), message).await?;
+    let write_res = {
+        let mut stream = sender.lock().await;
+        stream.send(Message::Binary(res.into_bytes())).await
+    };
+
+    if let Err(e) = write_res {
+        let msg = format!("Error sending message: {}", e);
+        return Err(msg.into());
+    }
+
+    Ok(())
+}
+
+async fn handle_target_response(
     crawler: Client,
     config: Arc<ClientConfig>,
     message: TunnelMessage,
 ) -> Result<TunnelMessage> {
-    let st_opt = match message.status_line {
+    let st_opt = match message.http_line {
         StatusLine::Request(req) => Some(req),
         _ => None,
     };
@@ -320,8 +249,13 @@ async fn forward_request(
     let method = st.method.as_str();
     let uri = st.path.as_str();
 
-    let req_id = message.id.to_string();
-    info!("Forwarding request: {} {} ID={}", method, uri, req_id);
+    let req_id = message.header.id.clone();
+    info!(
+        "Forwarding request: {} {} ID={}",
+        method,
+        uri,
+        req_id.to_string()
+    );
 
     // Figure out the method
     // We assume that the target is a localhost address
@@ -334,12 +268,7 @@ async fn forward_request(
     let mut r = crawler.request(ReqwestMethod::from_bytes(method.as_bytes()).unwrap(), url);
 
     // Inject headers
-    for (k, v) in message.headers.iter() {
-        // Skip some custom headers
-        if k == WEBHOOK_OP || k == WEBHOOK_TOKEN {
-            continue;
-        }
-
+    for (k, v) in message.http_headers.iter() {
         if k == "host" {
             // Rename host to the proxied target host
             r = r.header("host", &config.target_address);
@@ -348,8 +277,8 @@ async fn forward_request(
         }
     }
 
-    if message.initial_body.len() > 0 {
-        r = r.body(message.initial_body);
+    if message.http_body.len() > 0 {
+        r = r.body(message.http_body);
     }
 
     let response = r.send().await;
@@ -363,20 +292,15 @@ async fn forward_request(
                 Some(res.status().canonical_reason().unwrap().to_string()),
             ));
 
-            let orig_id = message.id.clone();
-            let mut tunnel_res = TunnelMessage::new(orig_id, status_line);
-            tunnel_res.headers.extend(
+            let header = WebhookHeader::new(req_id);
+            let mut tunnel_res = TunnelMessage::new(header, status_line);
+            tunnel_res.http_headers.extend(
                 res.headers()
                     .iter()
                     .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap().to_string())),
             );
 
-            // Mark this as a forward response
-            tunnel_res
-                .headers
-                .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_FORWARD_RES.to_string()));
-
-            tunnel_res.initial_body = res.bytes().await.unwrap().to_vec();
+            tunnel_res.http_body = res.bytes().await.unwrap().to_vec();
 
             Ok(tunnel_res)
         }
