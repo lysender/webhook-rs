@@ -1,11 +1,9 @@
 # Webhook mode
 web_address = "127.0.0.1:9000"
-tunnel_port = 9001
 webhook_path = "/webhook"
 jwt_secret = "secret"
 
 # Website mode
 # web_address = "127.0.0.1:9000"
-# tunnel_port = 9001
 # webhook_path = "*"
 # jwt_secret = "secret"

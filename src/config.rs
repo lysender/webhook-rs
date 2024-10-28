@@ -12,14 +12,12 @@ pub const RUST_LOG: &str = "RUST_LOG";
 #[derive(Clone, Deserialize)]
 pub struct ServerConfig {
     pub web_address: String,
-    pub tunnel_port: u16,
     pub webhook_path: String,
     pub jwt_secret: String,
 }
 
 #[derive(Clone, Deserialize)]
 pub struct ClientConfig {
-    pub tunnel_address: String,
     pub ws_address: String,
     pub target_address: String,
     pub target_secure: bool,
@@ -79,12 +77,6 @@ impl ClientConfig {
             Ok(value) => value,
             Err(error) => return Err(Error::ConfigParseError(error.to_string())),
         };
-
-        if config.tunnel_address.len() == 0 {
-            return Err(Error::ConfigInvalidError(
-                "Tunnel address must not be empty.".to_string(),
-            ));
-        }
 
         if config.ws_address.len() == 0 {
             return Err(Error::ConfigInvalidError(

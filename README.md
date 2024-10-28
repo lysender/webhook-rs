@@ -18,7 +18,10 @@ not really worth it since I just need to run the tool once in a while.
 
 I wrote this tool for a very simple use case:
 - Run the server app on a cloud server to accept webhook requests
-- Run the client app to forward requests to the target app running locally
+- Run the client app which connects to the server using websocket
+- The server forwards webhook requests to the client via websocket
+- The client app to forward requests to the target app running locally
+- App response will be sent back to the server and back to the calling third party service
 - Stop the apps when done
 
 ## Just give me the EXE!
@@ -54,7 +57,6 @@ Configuration (webhook mode):
 
 ```toml
 web_address = "127.0.0.1:9000"
-tunnel_port = 9001
 webhook_path = "/webhook"
 jwt_secret = "super-strong-secret"
 ```
@@ -63,7 +65,6 @@ Website mode:
 
 ```toml
 web_address = "127.0.0.1:9000"
-tunnel_port = 9001
 webhook_path = "*"
 jwt_secret = "super-strong-secret"
 ```
@@ -79,7 +80,7 @@ Run the app as a client.
 Configuration:
 
 ```toml
-tunnel_address = "127.0.0.1:9001"
+ws_address = "ws://127.0.0.1:9000/_ws"
 target_address = "127.0.0.1:4200"
 target_secure = false
 jwt_secret = "super-strong-secret"
@@ -99,13 +100,8 @@ https://github.com/lysender/ok-rs
 
 ## Security
 
-The proxy client/server communication is using basic HTTP/1.1 message
-exchange over TCP without any encryption.
-
-Use it at your own risk.
-
-There is a plan to switch to websockets for client-server connection.
-This will fix the security issue by serving the websocket over HTTPS.
+Use HTTPS for the exposed web server to ensure secure connection. Both the webhook requests
+from third party services and the client-server communication will use the same secure connection.
 
 ## Performance
 
