@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     config::{ClientConfig, ServerConfig},
     message::TunnelMessage2,
-    queue::{MessageMap, MessageQueue, QueueMessage},
+    queue::{MessageMap, MessageQueue},
     tunnel::TunnelState,
     Result,
 };
@@ -38,11 +38,11 @@ impl ServerContext {
         self.tunnel_state.reset().await;
     }
 
-    pub async fn add_request(&self, message: QueueMessage) {
+    pub async fn add_request(&self, message: TunnelMessage2) {
         self.req_queue.push(message).await;
     }
 
-    pub async fn get_request(&self) -> Option<QueueMessage> {
+    pub async fn get_request(&self) -> Option<TunnelMessage2> {
         self.req_queue.pop().await
     }
 

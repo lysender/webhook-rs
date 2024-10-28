@@ -294,10 +294,6 @@ impl TunnelMessage2 {
         })
     }
 
-    pub fn id(&self) -> String {
-        self.header.id.to_string()
-    }
-
     /// Converts full message into bytes, adding EOF marker at the end
     pub fn into_bytes(&self) -> Vec<u8> {
         let mut buffer: Vec<u8> = Vec::new();

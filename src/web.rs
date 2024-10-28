@@ -37,10 +37,52 @@ use crate::message::HttpLine;
 use crate::message::StatusLine;
 use crate::message::TunnelMessage2;
 use crate::message::WebhookHeader;
-use crate::queue::QueueMessage;
 use crate::token::verify_auth_token;
 use crate::Error;
 use crate::Result;
+
+pub struct TunnelReceiver {
+    stream: Option<SplitStream<WebSocket>>,
+}
+
+impl TunnelReceiver {
+    pub fn new(stream: SplitStream<WebSocket>) -> Self {
+        Self {
+            stream: Some(stream),
+        }
+    }
+
+    pub async fn read(&mut self) -> Option<Message> {
+        if let Some(stream) = self.stream.as_mut() {
+            if let Some(Ok(msg)) = stream.next().await {
+                return Some(msg);
+            }
+        }
+        None
+    }
+}
+
+pub struct TunnelSender {
+    stream: Option<SplitSink<WebSocket, Message>>,
+}
+
+impl TunnelSender {
+    pub fn new(stream: SplitSink<WebSocket, Message>) -> Self {
+        Self {
+            stream: Some(stream),
+        }
+    }
+
+    pub async fn send(&mut self, msg: Message) -> Result<()> {
+        if let Some(stream) = self.stream.as_mut() {
+            if let Err(e) = stream.send(msg).await {
+                let msg = format!("Error sending message: {e}");
+                return Err(msg.into());
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
@@ -151,7 +193,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     }
 
     // Push the request to the queue
-    ctx.add_request(QueueMessage::Message(http_req)).await;
+    ctx.add_request(http_req).await;
 
     // Wait for response to arrive
     let tunnel_res = ctx.get_response(&id.as_u128()).await;
@@ -317,10 +359,13 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
     //    cnt
     //});
 
+    let tunnel_receiver = Arc::new(Mutex::new(TunnelReceiver::new(receiver)));
+    let tunnel_sender = Arc::new(Mutex::new(TunnelSender::new(sender)));
+
     let join_res = tokio::try_join!(
-        ping_task(ctx.clone()),
-        send_task(ctx.clone(), sender),
-        recv_task(ctx.clone(), receiver)
+        ping_task(tunnel_sender.clone()),
+        send_task(ctx.clone(), tunnel_sender),
+        recv_task(ctx.clone(), tunnel_receiver)
     );
 
     if let Err(e) = join_res {
@@ -381,27 +426,32 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
 //    ControlFlow::Continue(())
 //}
 
-async fn ping_task(ctx: Arc<ServerContext>) -> Result<()> {
+async fn ping_task(sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
     loop {
         // Send a ping message
-        ctx.add_request(QueueMessage::Ping).await;
+        let res = {
+            let mut stream = sender.lock().await;
+            stream.send(Message::Ping(vec![1, 2, 3])).await
+        };
+
+        if let Err(e) = res {
+            error!("Failed to send ping message to client: {}", e);
+            break;
+        }
 
         // Send another in 60 seconds
         sleep(Duration::from_secs(60)).await;
     }
 
-    Ok(())
+    Err("Ping task ended".into())
 }
 
-async fn send_task(
-    ctx: Arc<ServerContext>,
-    mut sender: SplitSink<WebSocket, Message>,
-) -> Result<()> {
+async fn send_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
     loop {
         if let Some(message) = ctx.get_request().await {
-            let res = match message {
-                QueueMessage::Ping => sender.send(Message::Ping(vec![1, 2, 3])).await,
-                QueueMessage::Message(msg) => sender.send(Message::Binary(msg.into_bytes())).await,
+            let res = {
+                let mut stream = sender.lock().await;
+                stream.send(Message::Binary(message.into_bytes())).await
             };
 
             if let Err(e) = res {
@@ -414,11 +464,18 @@ async fn send_task(
     Ok(())
 }
 
-async fn recv_task(ctx: Arc<ServerContext>, mut receiver: SplitStream<WebSocket>) -> Result<()> {
-    while let Some(Ok(msg)) = receiver.next().await {
-        let res = handle_ws_message(ctx.clone(), msg).await;
-        if let Err(e) = res {
-            error!("Failed to handle message from client: {}", e);
+async fn recv_task(ctx: Arc<ServerContext>, receiver: Arc<Mutex<TunnelReceiver>>) -> Result<()> {
+    loop {
+        let received = {
+            let mut stream = receiver.lock().await;
+            stream.read().await
+        };
+
+        if let Some(msg) = received {
+            let res = handle_ws_message(ctx.clone(), msg).await;
+            if let Err(e) = res {
+                error!("Failed to handle message from client: {}", e);
+            }
         }
     }
 
