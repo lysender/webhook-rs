@@ -1,12 +1,40 @@
 use std::sync::Arc;
 
+use tokio::sync::Mutex;
+
 use crate::{
     config::{ClientConfig, ServerConfig},
-    message::TunnelMessage2,
+    message::TunnelMessage,
     queue::{MessageMap, MessageQueue},
-    tunnel::TunnelState,
     Result,
 };
+
+pub struct TunnelState {
+    verified: Mutex<bool>,
+}
+
+impl TunnelState {
+    pub fn new() -> Self {
+        Self {
+            verified: Mutex::new(false),
+        }
+    }
+
+    pub async fn is_verified(&self) -> bool {
+        let verified = self.verified.lock().await;
+        *verified
+    }
+
+    pub async fn verify(&self) {
+        let mut verified = self.verified.lock().await;
+        *verified = true;
+    }
+
+    pub async fn reset(&self) {
+        let mut verified = self.verified.lock().await;
+        *verified = false;
+    }
+}
 
 pub struct ServerContext {
     pub config: Arc<ServerConfig>,
@@ -38,11 +66,11 @@ impl ServerContext {
         self.tunnel_state.reset().await;
     }
 
-    pub async fn add_request(&self, message: TunnelMessage2) {
+    pub async fn add_request(&self, message: TunnelMessage) {
         self.req_queue.push(message).await;
     }
 
-    pub async fn get_request(&self) -> Option<TunnelMessage2> {
+    pub async fn get_request(&self) -> Option<TunnelMessage> {
         self.req_queue.pop().await
     }
 
@@ -50,11 +78,11 @@ impl ServerContext {
         self.req_queue.clear().await;
     }
 
-    pub async fn add_response(&self, message: TunnelMessage2) {
+    pub async fn add_response(&self, message: TunnelMessage) {
         self.res_map.add(message).await;
     }
 
-    pub async fn get_response(&self, id: &u128) -> Result<TunnelMessage2> {
+    pub async fn get_response(&self, id: &u128) -> Result<TunnelMessage> {
         self.res_map.get(id).await
     }
 
@@ -96,11 +124,11 @@ impl ClientContext {
         self.tunnel_state.reset().await;
     }
 
-    pub async fn add_request(&self, message: TunnelMessage2) {
+    pub async fn add_request(&self, message: TunnelMessage) {
         self.req_queue.push(message).await;
     }
 
-    pub async fn get_request(&self) -> Option<TunnelMessage2> {
+    pub async fn get_request(&self) -> Option<TunnelMessage> {
         self.req_queue.pop().await
     }
 

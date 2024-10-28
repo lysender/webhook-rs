@@ -16,7 +16,7 @@ use tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::context::ClientContext;
-use crate::message::{ResponseLine, TunnelMessage2};
+use crate::message::{ResponseLine, TunnelMessage};
 use crate::message::{StatusLine, WebhookHeader};
 use crate::{config::ClientConfig, token::create_auth_token, Result};
 
@@ -177,7 +177,7 @@ async fn handle_ws_message(ctx: Arc<ClientContext>, msg: Message) -> ControlFlow
             // Track the last pong message timestamp
             info!("Received pong with {:?}", v);
         }
-        Message::Binary(b) => match TunnelMessage2::from_buffer(&b[..]) {
+        Message::Binary(b) => match TunnelMessage::from_buffer(&b[..]) {
             Ok(message) => {
                 ctx.add_request(message).await;
             }
@@ -200,7 +200,7 @@ async fn handle_forward(
     ctx: Arc<ClientContext>,
     crawler: Client,
     sender: Arc<Mutex<ClientTunnelSender>>,
-    message: TunnelMessage2,
+    message: TunnelMessage,
 ) -> Result<()> {
     let res = handle_target_response(crawler, ctx.config.clone(), message).await?;
     let write_res = {
@@ -219,8 +219,8 @@ async fn handle_forward(
 async fn handle_target_response(
     crawler: Client,
     config: Arc<ClientConfig>,
-    message: TunnelMessage2,
-) -> Result<TunnelMessage2> {
+    message: TunnelMessage,
+) -> Result<TunnelMessage> {
     let st_opt = match message.http_line {
         StatusLine::Request(req) => Some(req),
         _ => None,
@@ -273,7 +273,7 @@ async fn handle_target_response(
             ));
 
             let header = WebhookHeader::new(req_id);
-            let mut tunnel_res = TunnelMessage2::new(header, status_line);
+            let mut tunnel_res = TunnelMessage::new(header, status_line);
             tunnel_res.http_headers.extend(
                 res.headers()
                     .iter()

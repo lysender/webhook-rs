@@ -32,7 +32,7 @@ use futures::{sink::SinkExt, stream::StreamExt};
 use crate::context::ServerContext;
 use crate::message::HttpLine;
 use crate::message::StatusLine;
-use crate::message::TunnelMessage2;
+use crate::message::TunnelMessage;
 use crate::message::WebhookHeader;
 use crate::token::verify_auth_token;
 use crate::Error;
@@ -172,7 +172,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     // Build original request
     let wh_header = WebhookHeader::new(id);
     let http_st = StatusLine::Request(HttpLine::new(method.clone(), uri, "HTTP/1.1".to_string()));
-    let mut http_req = TunnelMessage2::new(wh_header, http_st);
+    let mut http_req = TunnelMessage::new(wh_header, http_st);
 
     // Add original headers
     http_req.http_headers.extend(
@@ -201,7 +201,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     }
 }
 
-fn handle_forward_success(fw_res: TunnelMessage2) -> Response<Body> {
+fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
     let st_opt = match fw_res.http_line {
         StatusLine::Response(st) => Some(st),
         _ => None,
@@ -341,7 +341,7 @@ async fn handle_ws_message(ctx: Arc<ServerContext>, msg: Message) -> Result<()> 
             info!("Received pong with {:?}", v);
             Ok(())
         }
-        Message::Binary(b) => match TunnelMessage2::from_buffer(&b[..]) {
+        Message::Binary(b) => match TunnelMessage::from_buffer(&b[..]) {
             Ok(message) => {
                 ctx.add_response(message).await;
                 Ok(())

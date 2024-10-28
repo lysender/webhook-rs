@@ -5,15 +5,15 @@ use tokio::{
 };
 use tracing::error;
 
-use crate::{message::TunnelMessage2, Result};
+use crate::{message::TunnelMessage, Result};
 
 pub struct MessageMap {
-    messages: Mutex<HashMap<u128, TunnelMessage2>>,
+    messages: Mutex<HashMap<u128, TunnelMessage>>,
     notify: Notify,
 }
 
 pub struct MessageQueue {
-    messages: Mutex<VecDeque<TunnelMessage2>>,
+    messages: Mutex<VecDeque<TunnelMessage>>,
     notify: Notify,
 }
 
@@ -25,7 +25,7 @@ impl MessageQueue {
         }
     }
 
-    pub async fn push(&self, message: TunnelMessage2) {
+    pub async fn push(&self, message: TunnelMessage) {
         {
             let mut messages = self.messages.lock().await;
             messages.push_back(message);
@@ -33,7 +33,7 @@ impl MessageQueue {
         self.notify.notify_waiters();
     }
 
-    pub async fn pop(&self) -> Option<TunnelMessage2> {
+    pub async fn pop(&self) -> Option<TunnelMessage> {
         let maybe_message = {
             let mut messages = self.messages.lock().await;
             messages.pop_front()
@@ -65,7 +65,7 @@ impl MessageMap {
         }
     }
 
-    pub async fn add(&self, message: TunnelMessage2) {
+    pub async fn add(&self, message: TunnelMessage) {
         {
             let mut messages = self.messages.lock().await;
             let id = message.header.id.as_u128();
@@ -74,7 +74,7 @@ impl MessageMap {
         self.notify.notify_waiters();
     }
 
-    pub async fn get(&self, id: &u128) -> Result<TunnelMessage2> {
+    pub async fn get(&self, id: &u128) -> Result<TunnelMessage> {
         // Try to get the message within 10 seconds and give up after that
         match timeout(Duration::from_secs(10), self.get_inner(id)).await {
             Ok(res) => Ok(res.expect("Message must be present in the map.")),
@@ -86,9 +86,9 @@ impl MessageMap {
         }
     }
 
-    async fn get_inner(&self, id: &u128) -> Option<TunnelMessage2> {
+    async fn get_inner(&self, id: &u128) -> Option<TunnelMessage> {
         // Keep trying to get the message until it becomes available
-        let message: Option<TunnelMessage2>;
+        let message: Option<TunnelMessage>;
         loop {
             let maybe_message = {
                 let mut messages = self.messages.lock().await;
