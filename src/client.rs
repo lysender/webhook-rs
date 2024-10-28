@@ -98,6 +98,8 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
         }
     };
 
+    ctx.verify().await;
+
     info!("Connected to websocket server.");
 
     let crawler = Client::new();
@@ -115,6 +117,8 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
         let msg = format!("{}", e);
         error!("{}", msg);
     }
+
+    ctx.unverify().await;
 
     Err("Websocket client exited.".into())
 }
