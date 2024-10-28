@@ -293,8 +293,7 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
     );
 
     if let Err(e) = join_res {
-        let msg = format!("{}", e);
-        error!(msg);
+        error!("{}", e);
     }
 
     ctx.unverify().await;
@@ -305,6 +304,11 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
 
 async fn ping_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
     loop {
+        if ctx.is_stale_connection(Instant::now()).await {
+            error!("Connection is stale. Terminating.");
+            break;
+        }
+
         // Send a ping message
         let res = {
             let mut stream = sender.lock().await;
@@ -313,11 +317,6 @@ async fn ping_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) ->
 
         if let Err(e) = res {
             error!("Failed to send ping message to client: {}", e);
-            break;
-        }
-
-        if ctx.is_stale_connection(Instant::now()).await {
-            error!("Connection is stale. Terminating.");
             break;
         }
 

@@ -5,6 +5,7 @@ use reqwest::Method as ReqwestMethod;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -31,10 +32,16 @@ impl ClientTunnelReceiver {
         }
     }
 
-    pub async fn read(&mut self) -> Option<tungstenite::Message> {
+    pub async fn read(&mut self) -> Option<Result<Message>> {
         if let Some(stream) = self.stream.as_mut() {
-            if let Some(Ok(msg)) = stream.next().await {
-                return Some(msg);
+            if let Some(res) = stream.next().await {
+                match res {
+                    Ok(msg) => return Some(Ok(msg)),
+                    Err(e) => {
+                        let msg = format!("Error reading message: {}", e);
+                        return Some(Err(msg.into()));
+                    }
+                }
             }
         }
         None
@@ -42,19 +49,17 @@ impl ClientTunnelReceiver {
 }
 
 pub struct ClientTunnelSender {
-    stream: Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>>,
+    stream: Option<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>,
 }
 
 impl ClientTunnelSender {
-    pub fn new(
-        stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>,
-    ) -> Self {
+    pub fn new(stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>) -> Self {
         Self {
             stream: Some(stream),
         }
     }
 
-    pub async fn send(&mut self, msg: tungstenite::Message) -> Result<()> {
+    pub async fn send(&mut self, msg: Message) -> Result<()> {
         if let Some(stream) = self.stream.as_mut() {
             if let Err(e) = stream.send(msg).await {
                 let msg = format!("Error sending message: {e}");
@@ -68,7 +73,7 @@ impl ClientTunnelSender {
 pub async fn start_client(ctx: Arc<ClientContext>) {
     let res = ws_main(ctx).await;
     if let Err(e) = res {
-        error!("{:?}", e);
+        error!("{}", e);
     }
 }
 
@@ -80,16 +85,14 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
         .insert("authorization", token.as_str().parse().unwrap());
 
     let ws_stream = match connect_async(req).await {
-        Ok((stream, response)) => {
-            println!("Handshake for client has been completed");
-            println!("Server response was {:?}", response);
-            stream
-        }
+        Ok((stream, _response)) => stream,
         Err(e) => {
-            let error = format!("Websocket handshake for client failed with {:?}", e);
+            let error = format!("Websocket handshake for client failed with {}", e);
             return Err(error.into());
         }
     };
+
+    info!("Connected to websocket server.");
 
     let crawler = Client::new();
     let (sender, receiver) = ws_stream.split();
@@ -97,26 +100,32 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
     let tunnel_sender = Arc::new(Mutex::new(ClientTunnelSender::new(sender)));
 
     let res = tokio::try_join!(
-        ping_task(tunnel_sender.clone()),
+        ping_task(ctx.clone(), tunnel_sender.clone()),
         send_task(ctx.clone(), tunnel_sender, crawler),
         recv_task(ctx.clone(), tunnel_receiver)
     );
 
     if let Err(e) = res {
         let msg = format!("{}", e);
-        return Err(msg.into());
+        error!("{}", msg);
     }
 
     Err("Websocket client exited.".into())
 }
 
-async fn ping_task(sender: Arc<Mutex<ClientTunnelSender>>) -> Result<()> {
+async fn ping_task(ctx: Arc<ClientContext>, sender: Arc<Mutex<ClientTunnelSender>>) -> Result<()> {
     loop {
+        if ctx.is_stale_connection(Instant::now()).await {
+            error!("Connection is stale. Terminating.");
+            break;
+        }
+
         // Send a ping message
         let res = {
             let mut stream = sender.lock().await;
             stream.send(Message::Ping("PING".into())).await
         };
+
         if let Err(e) = res {
             let msg = format!("Error sending ping: {}", e);
             error!("{}", msg);
@@ -155,15 +164,24 @@ async fn recv_task(
     receiver: Arc<Mutex<ClientTunnelReceiver>>,
 ) -> Result<()> {
     loop {
-        let maybe_msg = {
+        let received = {
             let mut tunnel = receiver.lock().await;
             tunnel.read().await
         };
 
-        if let Some(msg) = maybe_msg {
-            let res = handle_ws_message(ctx.clone(), msg).await;
-            if res.is_break() {
-                break;
+        if let Some(received_res) = received {
+            match received_res {
+                Ok(msg) => {
+                    let res = handle_ws_message(ctx.clone(), msg).await;
+                    if res.is_break() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{}", e);
+                    error!("{}", msg);
+                    break;
+                }
             }
         }
     }
@@ -173,27 +191,23 @@ async fn recv_task(
 
 async fn handle_ws_message(ctx: Arc<ClientContext>, msg: Message) -> ControlFlow<()> {
     match msg {
-        Message::Pong(v) => {
-            // Track the last pong message timestamp
-            info!("Received pong with {:?}", v);
+        Message::Pong(_) => {
+            ctx.update_pong(Instant::now()).await;
+            ControlFlow::Continue(())
         }
         Message::Binary(b) => match TunnelMessage::from_buffer(&b[..]) {
             Ok(message) => {
                 ctx.add_request(message).await;
+                ControlFlow::Continue(())
             }
             Err(e) => {
                 error!("Failed to parse binary message: {}", e);
+                ControlFlow::Continue(())
             }
         },
-        Message::Close(_) => {
-            return ControlFlow::Break(());
-        }
-        _ => {
-            // Do nothing
-        }
+        Message::Close(_) => ControlFlow::Break(()),
+        _ => ControlFlow::Continue(()),
     }
-
-    ControlFlow::Continue(())
 }
 
 async fn handle_forward(
