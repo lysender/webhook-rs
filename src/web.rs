@@ -255,6 +255,8 @@ async fn ws_handler(
 }
 
 async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAddr) {
+    // We know, at this point, that there is a connected client
+    ctx.verify().await;
     // Send a ping
     //if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
     //    info!("Pinged {:?}", who);
@@ -372,6 +374,8 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
         let msg = format!("{}", e);
         error!(msg);
     }
+
+    ctx.unverify().await;
 
     //)! {
     //    rv_a = (&mut send_task) => {

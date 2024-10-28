@@ -4,7 +4,6 @@ use tracing::error;
 
 use webhook_rs::config::{ServerAppArgs, ServerConfig, RUST_LOG};
 use webhook_rs::context::ServerContext;
-use webhook_rs::tunnel::start_tunnel_server;
 use webhook_rs::web::start_web_server;
 use webhook_rs::{Error, Result};
 
