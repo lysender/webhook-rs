@@ -88,6 +88,7 @@ impl ServerContext {
 
     pub async fn verify(&self) {
         self.tunnel_state.verify().await;
+        self.last_pong.update(Instant::now()).await;
     }
 
     pub async fn unverify(&self) {
@@ -156,6 +157,7 @@ impl ClientContext {
 
     pub async fn verify(&self) {
         self.tunnel_state.verify().await;
+        self.last_pong.update(Instant::now()).await;
     }
 
     pub async fn unverify(&self) {
