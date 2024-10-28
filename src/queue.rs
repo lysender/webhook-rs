@@ -12,8 +12,13 @@ pub struct MessageMap {
     notify: Notify,
 }
 
+pub enum QueueMessage {
+    Message(TunnelMessage2),
+    Ping,
+}
+
 pub struct MessageQueue {
-    messages: Mutex<VecDeque<TunnelMessage2>>,
+    messages: Mutex<VecDeque<QueueMessage>>,
     notify: Notify,
 }
 
@@ -25,7 +30,7 @@ impl MessageQueue {
         }
     }
 
-    pub async fn push(&self, message: TunnelMessage2) {
+    pub async fn push(&self, message: QueueMessage) {
         {
             let mut messages = self.messages.lock().await;
             messages.push_back(message);
@@ -33,7 +38,7 @@ impl MessageQueue {
         self.notify.notify_waiters();
     }
 
-    pub async fn pop(&self) -> Option<TunnelMessage2> {
+    pub async fn pop(&self) -> Option<QueueMessage> {
         let maybe_message = {
             let mut messages = self.messages.lock().await;
             messages.pop_front()

@@ -10,32 +10,34 @@ use axum::response::Response;
 use axum::routing::any;
 use axum::routing::get;
 use axum::Router;
+use futures::stream::SplitSink;
+use futures::stream::SplitStream;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tower::ServiceBuilder;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::{error, info, Level};
 use uuid::Uuid;
 
-//allows to extract the IP of connecting user
+// Allows to extract the IP of connecting user
 use axum::extract::connect_info::ConnectInfo;
 use axum::extract::ws::CloseFrame;
 
-//allows to split the websocket stream into separate TX and RX branches
+// Allows to split the websocket stream into separate TX and RX branches
 use futures::{sink::SinkExt, stream::StreamExt};
 
 use crate::context::ServerContext;
 use crate::message::HttpLine;
 use crate::message::StatusLine;
-use crate::message::TunnelMessage;
-use crate::message::WEBHOOK_OP;
-use crate::message::WEBHOOK_OP_FORWARD;
-use crate::message::WEBHOOK_REQ_ID;
+use crate::message::TunnelMessage2;
+use crate::message::WebhookHeader;
+use crate::queue::QueueMessage;
 use crate::token::verify_auth_token;
 use crate::Error;
 use crate::Result;
@@ -129,31 +131,27 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     let method = request.method().to_string();
 
     // Build original request
+    let wh_header = WebhookHeader::new(id);
     let http_st = StatusLine::Request(HttpLine::new(method.clone(), uri, "HTTP/1.1".to_string()));
-    let mut http_req = TunnelMessage::new(id, http_st);
+    let mut http_req = TunnelMessage2::new(wh_header, http_st);
 
     // Add original headers
-    http_req.headers.extend(
+    http_req.http_headers.extend(
         request
             .headers()
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string())),
     );
 
-    // Add custom headers for forwarding
-    http_req
-        .headers
-        .push((WEBHOOK_OP.to_string(), WEBHOOK_OP_FORWARD.to_string()));
-
     // Add original body if present
     let with_body = vec!["POST", "PUT", "PATCH"];
     if with_body.contains(&method.as_str()) {
         let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
-        http_req.initial_body = body_bytes.to_vec();
+        http_req.http_body = body_bytes.to_vec();
     }
 
     // Push the request to the queue
-    ctx.add_request(http_req).await;
+    ctx.add_request(QueueMessage::Message(http_req)).await;
 
     // Wait for response to arrive
     let tunnel_res = ctx.get_response(&id.as_u128()).await;
@@ -164,8 +162,8 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     }
 }
 
-fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
-    let st_opt = match fw_res.status_line {
+fn handle_forward_success(fw_res: TunnelMessage2) -> Response<Body> {
+    let st_opt = match fw_res.http_line {
         StatusLine::Response(st) => Some(st),
         _ => None,
     };
@@ -173,16 +171,11 @@ fn handle_forward_success(fw_res: TunnelMessage) -> Response<Body> {
     let st = st_opt.unwrap();
 
     let mut r = Response::builder().status(st.status_code);
-    for (k, v) in fw_res.headers.iter() {
-        // Skip custom headers
-        if k == WEBHOOK_OP || k == WEBHOOK_REQ_ID {
-            continue;
-        }
-
+    for (k, v) in fw_res.http_headers.iter() {
         r = r.header(k, v);
     }
 
-    r.body(Body::from(fw_res.initial_body)).unwrap()
+    r.body(Body::from(fw_res.http_body)).unwrap()
 }
 
 fn handle_forward_error(error: Option<Error>) -> Response<Body> {
@@ -205,151 +198,250 @@ async fn ws_handler(
 ) -> Response<Body> {
     let ctx = state.ctx.clone();
 
-    println!("headers: {:?}", headers);
     // Find auth token
     let Some(auth_token) = headers.get("authorization") else {
-        println!("No authorization header found");
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     };
 
     let secret = ctx.config.jwt_secret.as_str();
     let auth_token = auth_token.to_str().unwrap();
     if let Err(_) = verify_auth_token(auth_token, secret) {
-        println!("Invalid authorization token");
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
     ws.on_upgrade(move |socket| handle_socket(ctx.clone(), socket, addr))
 }
 
-async fn handle_socket(ctx: Arc<ServerContext>, mut socket: WebSocket, who: SocketAddr) {
+async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAddr) {
     // Send a ping
-    if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
-        info!("Pinged {:?}", who);
-    } else {
-        error!("Could not ping {:?}, closing connection", who);
-        return;
-    }
+    //if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
+    //    info!("Pinged {:?}", who);
+    //} else {
+    //    error!("Could not ping {:?}, closing connection", who);
+    //    return;
+    //}
 
     // Wait for a single message fron the client
     // This blocks until the client sends a message
-    if let Some(msg) = socket.recv().await {
-        if let Ok(msg) = msg {
-            if process_msg(msg, who).is_break() {
-                return;
-            }
-        } else {
-            println!("client {:?} abruptly disconnected", who);
-        }
-    }
+    //if let Some(msg) = socket.recv().await {
+    //    if let Ok(msg) = msg {
+    //        if process_msg(msg, who).is_break() {
+    //            return;
+    //        }
+    //    } else {
+    //        println!("client {:?} abruptly disconnected", who);
+    //    }
+    //}
 
     // Send some messages with delay each message
-    for i in 1..5 {
-        if socket
-            .send(Message::Text(format!("Hi {} times!", i)))
-            .await
-            .is_err()
-        {
-            println!("client {:?} abruptly disconnected", who);
-            return;
-        }
-        sleep(Duration::from_millis(100)).await;
-    }
+    //for i in 1..5 {
+    //    if socket
+    //        .send(Message::Text(format!("Hi {} times!", i)))
+    //        .await
+    //        .is_err()
+    //    {
+    //        println!("client {:?} abruptly disconnected", who);
+    //        return;
+    //    }
+    //    sleep(Duration::from_millis(100)).await;
+    //}
 
     // Split reader and writer
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, receiver) = socket.split();
+
+    //let sender_ctx = ctx.clone();
+    //let send_task = tokio::spawn(async move {
+    //    loop {
+    //        if let Some(message) = sender_ctx.get_request().await {
+    //            let res = sender.send(Message::Binary(message.into_bytes())).await;
+    //            if let Err(e) = res {
+    //                error!("Failed to send message to client: {}", e);
+    //
+    //                // Should we really disconnect if we failt to send to a client?
+    //                break;
+    //            }
+    //        }
+    //    }
+    //    0
+    //});
+
+    //let receiver_ctx = ctx.clone();
+    //let recv_task = tokio::spawn(async move {
+    //    while let Some(Ok(msg)) = receiver.next().await {
+    //        let res = handle_ws_message(receiver_ctx.clone(), msg).await;
+    //        if let Err(e) = res {
+    //            error!("Failed to handle message from client: {}", e);
+    //        }
+    //    }
+    //    0
+    //});
 
     // Spawn a task to send messages to the client
-    let mut send_task = tokio::spawn(async move {
-        let n_msg = 20;
-        for i in 0..n_msg {
-            // In case of a websocket error, we exit
-            if sender
-                .send(Message::Text(format!("Server message {}", i)))
-                .await
-                .is_err()
-            {
-                return i;
-            }
-
-            sleep(Duration::from_millis(300)).await;
-        }
-
-        println!("Sending close to {:?}", who);
-        if let Err(e) = sender
-            .send(Message::Close(Some(CloseFrame {
-                code: axum::extract::ws::close_code::NORMAL,
-                reason: Cow::from("Goodbye"),
-            })))
-            .await
-        {
-            println!("Coud not send Close due to {:?}, probably it is ok?", e);
-        }
-        n_msg
-    });
+    //let mut send_task = tokio::spawn(async move {
+    //    let n_msg = 20;
+    //    for i in 0..n_msg {
+    //        // In case of a websocket error, we exit
+    //        if sender
+    //            .send(Message::Text(format!("Server message {}", i)))
+    //            .await
+    //            .is_err()
+    //        {
+    //            return i;
+    //        }
+    //
+    //        sleep(Duration::from_millis(300)).await;
+    //    }
+    //
+    //    println!("Sending close to {:?}", who);
+    //    if let Err(e) = sender
+    //        .send(Message::Close(Some(CloseFrame {
+    //            code: axum::extract::ws::close_code::NORMAL,
+    //            reason: Cow::from("Goodbye"),
+    //        })))
+    //        .await
+    //    {
+    //        println!("Coud not send Close due to {:?}, probably it is ok?", e);
+    //    }
+    //    n_msg
+    //});
 
     // Second task will receive messages from client and print in server console
-    let mut recv_task = tokio::spawn(async move {
-        let mut cnt = 0;
-        while let Some(Ok(msg)) = receiver.next().await {
-            cnt += 1;
-            if process_msg(msg, who).is_break() {
+    //let mut recv_task = tokio::spawn(async move {
+    //    let mut cnt = 0;
+    //    while let Some(Ok(msg)) = receiver.next().await {
+    //        cnt += 1;
+    //        if process_msg(msg, who).is_break() {
+    //            break;
+    //        }
+    //    }
+    //    cnt
+    //});
+
+    let join_res = tokio::try_join!(
+        ping_task(ctx.clone()),
+        send_task(ctx.clone(), sender),
+        recv_task(ctx.clone(), receiver)
+    );
+
+    if let Err(e) = join_res {
+        let msg = format!("{}", e);
+        error!(msg);
+    }
+
+    //)! {
+    //    rv_a = (&mut send_task) => {
+    //        match rv_a {
+    //            Ok(a) => println!("{:?} messages sent to {:?}", a, who),
+    //            Err(e) => println!("Error sending messages {:?}", e)
+    //        }
+    //        recv_task.abort();
+    //    }
+    //    rv_b = (&mut recv_task) => {
+    //        match rv_b {
+    //            Ok(b) => println!("Received {:?} messages", b),
+    //            Err(e) => println!("Error receiving messages {:?}", e)
+    //        }
+    //        send_task.abort();
+    //    }
+    //}
+    //
+    //// Returning from the handler closes the websocket connection
+    //println!("Websocket context {:?} closed", who);
+}
+
+//fn process_msg(msg: Message, who: SocketAddr) -> ControlFlow<(), ()> {
+//    match msg {
+//        Message::Text(t) => {
+//            println!(">>> {:?} sent str: {:?}", who, t);
+//        }
+//        Message::Binary(b) => {
+//            println!(">>> {:?} sent {} bytes: {:?}", who, b.len(), b);
+//        }
+//        Message::Close(c) => {
+//            if let Some(cf) = c {
+//                println!(
+//                    ">>> {:?} sent close with code {} and reason {}",
+//                    who, cf.code, cf.reason
+//                );
+//            } else {
+//                println!(
+//                    ">>> {:?} somehow sent close message without CloseFrame",
+//                    who
+//                );
+//            }
+//        }
+//        Message::Pong(v) => {
+//            println!(">>> {:?} send pong with {:?}", who, v);
+//        }
+//        Message::Ping(v) => {
+//            // You should not handle ping manually but let's just inspect its message here for now
+//            println!(">>> {:?} sent ping with {:?}", who, v);
+//        }
+//    }
+//    ControlFlow::Continue(())
+//}
+
+async fn ping_task(ctx: Arc<ServerContext>) -> Result<()> {
+    loop {
+        // Send a ping message
+        ctx.add_request(QueueMessage::Ping).await;
+
+        // Send another in 60 seconds
+        sleep(Duration::from_secs(60)).await;
+    }
+
+    Ok(())
+}
+
+async fn send_task(
+    ctx: Arc<ServerContext>,
+    mut sender: SplitSink<WebSocket, Message>,
+) -> Result<()> {
+    loop {
+        if let Some(message) = ctx.get_request().await {
+            let res = match message {
+                QueueMessage::Ping => sender.send(Message::Ping(vec![1, 2, 3])).await,
+                QueueMessage::Message(msg) => sender.send(Message::Binary(msg.into_bytes())).await,
+            };
+
+            if let Err(e) = res {
+                error!("Failed to send message to client: {}", e);
                 break;
             }
         }
-        cnt
-    });
-
-    // If any one of the tasks exit, abort the other
-    tokio::select! {
-        rv_a = (&mut send_task) => {
-            match rv_a {
-                Ok(a) => println!("{:?} messages sent to {:?}", a, who),
-                Err(e) => println!("Error sending messages {:?}", e)
-            }
-            recv_task.abort();
-        }
-        rv_b = (&mut recv_task) => {
-            match rv_b {
-                Ok(b) => println!("Received {:?} messages", b),
-                Err(e) => println!("Error receiving messages {:?}", e)
-            }
-            send_task.abort();
-        }
     }
 
-    // Returning from the handler closes the websocket connection
-    println!("Websocket context {:?} closed", who);
+    Ok(())
 }
 
-fn process_msg(msg: Message, who: SocketAddr) -> ControlFlow<(), ()> {
-    match msg {
-        Message::Text(t) => {
-            println!(">>> {:?} sent str: {:?}", who, t);
-        }
-        Message::Binary(b) => {
-            println!(">>> {:?} sent {} bytes: {:?}", who, b.len(), b);
-        }
-        Message::Close(c) => {
-            if let Some(cf) = c {
-                println!(
-                    ">>> {:?} sent close with code {} and reason {}",
-                    who, cf.code, cf.reason
-                );
-            } else {
-                println!(
-                    ">>> {:?} somehow sent close message without CloseFrame",
-                    who
-                );
-            }
-        }
-        Message::Pong(v) => {
-            println!(">>> {:?} send pong with {:?}", who, v);
-        }
-        Message::Ping(v) => {
-            // You should not handle ping manually but let's just inspect its message here for now
-            println!(">>> {:?} sent ping with {:?}", who, v);
+async fn recv_task(ctx: Arc<ServerContext>, mut receiver: SplitStream<WebSocket>) -> Result<()> {
+    while let Some(Ok(msg)) = receiver.next().await {
+        let res = handle_ws_message(ctx.clone(), msg).await;
+        if let Err(e) = res {
+            error!("Failed to handle message from client: {}", e);
         }
     }
-    ControlFlow::Continue(())
+
+    Ok(())
+}
+
+async fn handle_ws_message(ctx: Arc<ServerContext>, msg: Message) -> Result<()> {
+    match msg {
+        Message::Pong(v) => {
+            // Track the last pong message timestamp
+            info!("Received pong with {:?}", v);
+            Ok(())
+        }
+        Message::Binary(b) => match TunnelMessage2::from_buffer(&b[..]) {
+            Ok(message) => {
+                ctx.add_response(message).await;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        },
+        _ => {
+            // Do nothing
+            Ok(())
+        }
+    }
 }
