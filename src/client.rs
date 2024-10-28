@@ -71,9 +71,15 @@ impl ClientTunnelSender {
 }
 
 pub async fn start_client(ctx: Arc<ClientContext>) {
-    let res = ws_main(ctx).await;
-    if let Err(e) = res {
-        error!("{}", e);
+    loop {
+        let ctx_clone = ctx.clone();
+        let res = ws_main(ctx_clone).await;
+        if let Err(e) = res {
+            error!("{}", e);
+        }
+
+        info!("Reconnecting in 10 seconds...");
+        sleep(Duration::from_secs(10)).await;
     }
 }
 
