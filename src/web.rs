@@ -13,8 +13,10 @@ use axum::Router;
 use futures::stream::SplitSink;
 use futures::stream::SplitStream;
 use std::net::SocketAddr;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -49,10 +51,16 @@ impl TunnelReceiver {
         }
     }
 
-    pub async fn read(&mut self) -> Option<Message> {
+    pub async fn read(&mut self) -> Option<Result<Message>> {
         if let Some(stream) = self.stream.as_mut() {
-            if let Some(Ok(msg)) = stream.next().await {
-                return Some(msg);
+            if let Some(res) = stream.next().await {
+                return match res {
+                    Ok(msg) => Some(Ok(msg)),
+                    Err(e) => {
+                        let msg = format!("Error reading message: {e}");
+                        Some(Err(msg.into()))
+                    }
+                };
             }
         }
         None
@@ -74,6 +82,16 @@ impl TunnelSender {
         if let Some(stream) = self.stream.as_mut() {
             if let Err(e) = stream.send(msg).await {
                 let msg = format!("Error sending message: {e}");
+                return Err(msg.into());
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        if let Some(stream) = self.stream.as_mut() {
+            if let Err(e) = stream.close().await {
+                let msg = format!("Error closing stream: {e}");
                 return Err(msg.into());
             }
         }
@@ -237,6 +255,11 @@ async fn ws_handler(
 ) -> Response<Body> {
     let ctx = state.ctx.clone();
 
+    // Only allow one connection at a time
+    if ctx.is_verified().await {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
+    }
+
     // Find auth token
     let Some(auth_token) = headers.get("authorization") else {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
@@ -255,6 +278,8 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
     // We know, at this point, that there is a connected client
     ctx.verify().await;
 
+    info!("Websocket client connected: {}", who);
+
     // Split reader and writer
     let (sender, receiver) = socket.split();
 
@@ -262,7 +287,7 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
     let tunnel_sender = Arc::new(Mutex::new(TunnelSender::new(sender)));
 
     let join_res = tokio::try_join!(
-        ping_task(tunnel_sender.clone()),
+        ping_task(ctx.clone(), tunnel_sender.clone()),
         send_task(ctx.clone(), tunnel_sender),
         recv_task(ctx.clone(), tunnel_receiver)
     );
@@ -275,10 +300,10 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
     ctx.unverify().await;
 
     // Returning from the handler closes the websocket connection
-    info!("Websocket context {:?} closed", who);
+    info!("Websocket client connection {} closed", who);
 }
 
-async fn ping_task(sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
+async fn ping_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
     loop {
         // Send a ping message
         let res = {
@@ -288,6 +313,11 @@ async fn ping_task(sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
 
         if let Err(e) = res {
             error!("Failed to send ping message to client: {}", e);
+            break;
+        }
+
+        if ctx.is_stale_connection(Instant::now()).await {
+            error!("Connection is stale. Terminating.");
             break;
         }
 
@@ -313,7 +343,7 @@ async fn send_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) ->
         }
     }
 
-    Ok(())
+    Err("Send task ended".into())
 }
 
 async fn recv_task(ctx: Arc<ServerContext>, receiver: Arc<Mutex<TunnelReceiver>>) -> Result<()> {
@@ -323,34 +353,44 @@ async fn recv_task(ctx: Arc<ServerContext>, receiver: Arc<Mutex<TunnelReceiver>>
             stream.read().await
         };
 
-        if let Some(msg) = received {
-            let res = handle_ws_message(ctx.clone(), msg).await;
-            if let Err(e) = res {
-                error!("Failed to handle message from client: {}", e);
+        if let Some(received_res) = received {
+            match received_res {
+                Ok(msg) => {
+                    let res = handle_ws_message(ctx.clone(), msg).await;
+                    if res.is_break() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{}", e);
+                    error!("{}", msg);
+                    break;
+                }
             }
         }
     }
 
-    Ok(())
+    Err("Receive task ended".into())
 }
 
-async fn handle_ws_message(ctx: Arc<ServerContext>, msg: Message) -> Result<()> {
+async fn handle_ws_message(ctx: Arc<ServerContext>, msg: Message) -> ControlFlow<()> {
     match msg {
-        Message::Pong(v) => {
-            // Track the last pong message timestamp
-            info!("Received pong with {:?}", v);
-            Ok(())
+        Message::Pong(_) => {
+            ctx.update_pong(Instant::now()).await;
+            ControlFlow::Continue(())
         }
         Message::Binary(b) => match TunnelMessage::from_buffer(&b[..]) {
             Ok(message) => {
                 ctx.add_response(message).await;
-                Ok(())
+                ControlFlow::Continue(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                let msg = format!("Failed to parse binary message: {e}");
+                error!("{}", msg);
+                ControlFlow::Continue(())
+            }
         },
-        _ => {
-            // Do nothing
-            Ok(())
-        }
+        Message::Close(_) => return ControlFlow::Break(()),
+        _ => ControlFlow::Continue(()),
     }
 }
