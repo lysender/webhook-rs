@@ -127,11 +127,20 @@ pub async fn start_web_server(ctx: Arc<ServerContext>) -> Result<()> {
             )
     } else {
         // Regular webhook mode
+        let base_path = webhook_path.as_str();
+        let sub_paths = format!("{}/*path", base_path);
         Router::new()
             .route("/", get(index_handler))
             .route("/_ws", any(ws_handler))
             .route(
-                webhook_path.as_str(),
+                base_path,
+                get(webhook_handler)
+                    .post(webhook_handler)
+                    .put(webhook_handler)
+                    .patch(webhook_handler),
+            )
+            .route(
+                sub_paths.as_str(),
                 get(webhook_handler)
                     .post(webhook_handler)
                     .put(webhook_handler)
