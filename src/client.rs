@@ -1,6 +1,8 @@
 use futures::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use reqwest::redirect;
 use reqwest::Client;
+use reqwest::ClientBuilder;
 use reqwest::Method as ReqwestMethod;
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -102,7 +104,14 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
 
     info!("Connected to websocket server.");
 
-    let crawler = Client::new();
+    let Ok(crawler) = ClientBuilder::new()
+        .redirect(redirect::Policy::none())
+        .build()
+    else {
+        let msg = "Failed to create crawler client.";
+        return Err(msg.into());
+    };
+
     let (sender, receiver) = ws_stream.split();
     let tunnel_receiver = Arc::new(Mutex::new(ClientTunnelReceiver::new(receiver)));
     let tunnel_sender = Arc::new(Mutex::new(ClientTunnelSender::new(sender)));
@@ -280,6 +289,8 @@ async fn handle_target_response(
             r = r.header(k, v);
         }
     }
+
+    // Do not follow redirects
 
     if message.http_body.len() > 0 {
         r = r.body(message.http_body);
