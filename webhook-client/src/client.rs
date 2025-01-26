@@ -18,10 +18,12 @@ use tungstenite::client::IntoClientRequest;
 // we will use tungstenite for websocket client impl (same library as what axum is using)
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-use crate::context::ClientContext;
-use crate::message::{ResponseLine, TunnelMessage};
-use crate::message::{StatusLine, WebhookHeader};
-use crate::{config::ClientConfig, token::create_auth_token, Result};
+use crate::config::Config;
+use crate::context::Context;
+use webhook::message::{ResponseLine, TunnelMessage};
+use webhook::message::{StatusLine, WebhookHeader};
+use webhook::token::create_auth_token;
+use zerror::Result;
 
 pub struct ClientTunnelReceiver {
     stream: Option<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
@@ -72,7 +74,7 @@ impl ClientTunnelSender {
     }
 }
 
-pub async fn start_client(ctx: Arc<ClientContext>) {
+pub async fn start_client(ctx: Arc<Context>) {
     loop {
         let ctx_clone = ctx.clone();
         let res = ws_main(ctx_clone).await;
@@ -85,7 +87,7 @@ pub async fn start_client(ctx: Arc<ClientContext>) {
     }
 }
 
-async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
+async fn ws_main(ctx: Arc<Context>) -> Result<()> {
     let token = create_auth_token(ctx.config.jwt_secret.as_str()).unwrap();
     let ws_address = ctx.config.ws_address.clone();
     let mut req = ws_address.as_str().into_client_request().unwrap();
@@ -132,7 +134,7 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
     Err("Websocket client exited.".into())
 }
 
-async fn ping_task(ctx: Arc<ClientContext>, sender: Arc<Mutex<ClientTunnelSender>>) -> Result<()> {
+async fn ping_task(ctx: Arc<Context>, sender: Arc<Mutex<ClientTunnelSender>>) -> Result<()> {
     loop {
         if ctx.is_stale_connection(Instant::now()).await {
             error!("Connection is stale. Terminating.");
@@ -159,7 +161,7 @@ async fn ping_task(ctx: Arc<ClientContext>, sender: Arc<Mutex<ClientTunnelSender
 }
 
 async fn send_task(
-    ctx: Arc<ClientContext>,
+    ctx: Arc<Context>,
     sender: Arc<Mutex<ClientTunnelSender>>,
     crawler: Client,
 ) -> Result<()> {
@@ -178,10 +180,7 @@ async fn send_task(
     Ok(())
 }
 
-async fn recv_task(
-    ctx: Arc<ClientContext>,
-    receiver: Arc<Mutex<ClientTunnelReceiver>>,
-) -> Result<()> {
+async fn recv_task(ctx: Arc<Context>, receiver: Arc<Mutex<ClientTunnelReceiver>>) -> Result<()> {
     loop {
         let received = {
             let mut tunnel = receiver.lock().await;
@@ -208,7 +207,7 @@ async fn recv_task(
     Err("Websocket receiver task exited.".into())
 }
 
-async fn handle_ws_message(ctx: Arc<ClientContext>, msg: Message) -> ControlFlow<()> {
+async fn handle_ws_message(ctx: Arc<Context>, msg: Message) -> ControlFlow<()> {
     match msg {
         Message::Pong(_) => {
             ctx.update_pong(Instant::now()).await;
@@ -230,7 +229,7 @@ async fn handle_ws_message(ctx: Arc<ClientContext>, msg: Message) -> ControlFlow
 }
 
 async fn handle_forward(
-    ctx: Arc<ClientContext>,
+    ctx: Arc<Context>,
     crawler: Client,
     sender: Arc<Mutex<ClientTunnelSender>>,
     message: TunnelMessage,
@@ -251,7 +250,7 @@ async fn handle_forward(
 
 async fn handle_target_response(
     crawler: Client,
-    config: Arc<ClientConfig>,
+    config: Arc<Config>,
     message: TunnelMessage,
 ) -> Result<TunnelMessage> {
     let st_opt = match message.http_line {
