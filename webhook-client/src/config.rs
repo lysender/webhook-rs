@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use zerror::{Error, Result};
+use webhook::{Error, Result};
 
 pub const RUST_LOG: &str = "RUST_LOG";
 

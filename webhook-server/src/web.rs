@@ -37,7 +37,7 @@ use webhook::message::StatusLine;
 use webhook::message::TunnelMessage;
 use webhook::message::WebhookHeader;
 use webhook::token::verify_auth_token;
-use zerror::{Error, Result};
+use webhook::{Error, Result};
 
 pub struct TunnelReceiver {
     stream: Option<SplitStream<WebSocket>>,

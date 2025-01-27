@@ -9,7 +9,7 @@ use crate::client::start_client;
 use crate::config::{AppArgs, Config, RUST_LOG};
 use crate::context::Context;
 
-use zerror::Result;
+use webhook::Result;
 
 #[tokio::main]
 async fn main() {
