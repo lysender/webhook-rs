@@ -33,13 +33,13 @@ See: https://rustup.rs
 Building the server:
 
 ```bash
-cargo build --bin webhook-server --release
+cargo build -p webhook-server --release
 ```
 
 Building the client:
 
 ```bash
-cargo build --bin webhook-client --release
+cargo build -p webhook-client --release
 ```
 
 ## Server
@@ -57,7 +57,7 @@ Configuration (webhook mode):
 
 ```toml
 web_address = "127.0.0.1:9000"
-webhook_path = "/webhook"
+webhook_path = "/webhooks"
 jwt_secret = "super-strong-secret"
 ```
 
@@ -80,9 +80,14 @@ Run the app as a client.
 Configuration:
 
 ```toml
-ws_address = "ws://127.0.0.1:9000/_ws"
-target_address = "127.0.0.1:4200"
-target_secure = false
+server_address = "ws://127.0.0.1:9000/_ws"
+targets = [
+    { host = "127.0.0.1:3001", secure = false, source_path = "/webhooks/slackWebhooks", dest_path = "/slackWebhooks" },
+    { host = "127.0.0.1:3002", secure = false, source_path = "/webhooks/githubWebhook", dest_path = "/githubWebhook" },
+
+    # Catch all routes
+    { host = "127.0.0.1:4200", secure = false, source_path = "/", dest_path = "/" },
+]
 jwt_secret = "super-strong-secret"
 ```
 

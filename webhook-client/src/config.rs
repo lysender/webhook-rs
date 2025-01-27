@@ -9,11 +9,18 @@ use zerror::{Error, Result};
 
 pub const RUST_LOG: &str = "RUST_LOG";
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProxyTarget {
+    pub host: String,
+    pub secure: bool,
+    pub source_path: String,
+    pub dest_path: String,
+}
+
 #[derive(Clone, Deserialize)]
 pub struct Config {
-    pub ws_address: String,
-    pub target_address: String,
-    pub target_secure: bool,
+    pub server_address: String,
+    pub targets: Vec<ProxyTarget>,
     pub jwt_secret: String,
 }
 
@@ -31,16 +38,39 @@ impl Config {
             Err(error) => return Err(Error::ConfigParseError(error.to_string())),
         };
 
-        if config.ws_address.len() == 0 {
+        if config.server_address.len() == 0 {
             return Err(Error::ConfigInvalidError(
                 "Websocket address must not be empty.".to_string(),
             ));
         }
 
-        if config.target_address.len() == 0 {
-            return Err(Error::ConfigInvalidError(
-                "Target application host must not be empty.".to_string(),
-            ));
+        // Simple validation for proxy targets
+        for target in config.targets.iter() {
+            if target.host.is_empty() {
+                return Err(Error::ConfigInvalidError(
+                    "Proxy target host is required.".to_string(),
+                ));
+            }
+            if target.source_path.is_empty() {
+                return Err(Error::ConfigInvalidError(
+                    "Proxy target source path is required.".to_string(),
+                ));
+            }
+            if !target.source_path.starts_with("/") {
+                return Err(Error::ConfigInvalidError(
+                    "Proxy target source path is invalid.".to_string(),
+                ));
+            }
+            if target.dest_path.is_empty() {
+                return Err(Error::ConfigInvalidError(
+                    "Proxy target destination path is required.".to_string(),
+                ));
+            }
+            if !target.dest_path.starts_with("/") {
+                return Err(Error::ConfigInvalidError(
+                    "Proxy target destination path is invalid.".to_string(),
+                ));
+            }
         }
 
         if config.jwt_secret.len() == 0 {

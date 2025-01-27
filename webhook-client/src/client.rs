@@ -19,6 +19,7 @@ use tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
 use crate::config::Config;
+use crate::config::ProxyTarget;
 use crate::context::Context;
 use webhook::message::{ResponseLine, TunnelMessage};
 use webhook::message::{StatusLine, WebhookHeader};
@@ -89,7 +90,7 @@ pub async fn start_client(ctx: Arc<Context>) {
 
 async fn ws_main(ctx: Arc<Context>) -> Result<()> {
     let token = create_auth_token(ctx.config.jwt_secret.as_str()).unwrap();
-    let ws_address = ctx.config.ws_address.clone();
+    let ws_address = ctx.config.server_address.clone();
     let mut req = ws_address.as_str().into_client_request().unwrap();
     req.headers_mut()
         .insert("authorization", token.as_str().parse().unwrap());
@@ -248,6 +249,13 @@ async fn handle_forward(
     Ok(())
 }
 
+fn find_target<'a>(config: &'a Config, uri: &str) -> Option<&'a ProxyTarget> {
+    config
+        .targets
+        .iter()
+        .find(|target| uri.starts_with(&target.source_path))
+}
+
 async fn handle_target_response(
     crawler: Client,
     config: Arc<Config>,
@@ -269,13 +277,17 @@ async fn handle_target_response(
         req_id.to_string()
     );
 
+    // Detect from which target the request is for
+    // Route request to that target
+    let target = find_target(&config, uri).expect("Target is required for the route.");
+
     // Figure out the method
     // We assume that the target is a localhost address
-    let protocol = match config.target_secure {
+    let protocol = match target.secure {
         true => "https",
         false => "http",
     };
-    let url = format!("{}://{}{}", protocol, &config.target_address, uri);
+    let url = format!("{}://{}{}", protocol, &target.host, uri);
 
     let mut r = crawler.request(ReqwestMethod::from_bytes(method.as_bytes()).unwrap(), url);
 
@@ -283,7 +295,7 @@ async fn handle_target_response(
     for (k, v) in message.http_headers.iter() {
         if k == "host" {
             // Rename host to the proxied target host
-            r = r.header("host", &config.target_address);
+            r = r.header("host", &target.host);
         } else {
             r = r.header(k, v);
         }
