@@ -287,7 +287,9 @@ async fn handle_target_response(
         true => "https",
         false => "http",
     };
-    let url = format!("{}://{}{}", protocol, &target.host, uri);
+
+    let target_uri = uri.replace(&target.source_path, &target.dest_path);
+    let url = format!("{}://{}{}", protocol, &target.host, &target_uri);
 
     let mut r = crawler.request(ReqwestMethod::from_bytes(method.as_bytes()).unwrap(), url);
 
