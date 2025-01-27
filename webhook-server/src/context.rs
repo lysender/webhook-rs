@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 use crate::config::Config;
 use webhook::message::TunnelMessage;
 use webhook::queue::{MessageMap, MessageQueue};
-use zerror::Result;
+use webhook::Result;
 
 pub struct TunnelState {
     verified: Mutex<bool>,

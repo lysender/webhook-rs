@@ -24,7 +24,7 @@ use crate::context::Context;
 use webhook::message::{ResponseLine, TunnelMessage};
 use webhook::message::{StatusLine, WebhookHeader};
 use webhook::token::create_auth_token;
-use zerror::Result;
+use webhook::Result;
 
 pub struct ClientTunnelReceiver {
     stream: Option<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,

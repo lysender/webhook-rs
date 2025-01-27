@@ -6,7 +6,7 @@ use std::{
 };
 
 use webhook::utils::valid_webhook_path;
-use zerror::{Error, Result};
+use webhook::{Error, Result};
 
 pub const RUST_LOG: &str = "RUST_LOG";
 

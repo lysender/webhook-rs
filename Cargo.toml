@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 
-members = [ "webhook","webhook-client", "webhook-server", "zerror"]
+members = [ "webhook", "webhook-client", "webhook-server" ]
 
 [workspace.dependencies]
 axum = { version = "0.7.7", features = ["macros", "ws"] }

@@ -2,7 +2,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 
-use zerror::{Error, Result};
+use crate::{Error, Result};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Claims {

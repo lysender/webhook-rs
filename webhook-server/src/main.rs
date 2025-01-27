@@ -5,7 +5,7 @@ use tracing::error;
 use crate::config::{AppArgs, Config, RUST_LOG};
 use crate::context::Context;
 use crate::web::start_web_server;
-use zerror::{Error, Result};
+use webhook::{Error, Result};
 
 pub mod config;
 pub mod context;
