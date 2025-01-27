@@ -5,7 +5,8 @@ use tokio::{
 };
 use tracing::error;
 
-use crate::{message::TunnelMessage, Result};
+use crate::message::TunnelMessage;
+use zerror::Result;
 
 pub struct MessageMap {
     messages: Mutex<HashMap<u128, TunnelMessage>>,

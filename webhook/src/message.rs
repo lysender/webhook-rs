@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::{Error, Result};
+use zerror::{Error, Result};
 
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';

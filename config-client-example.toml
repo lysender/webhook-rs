@@ -1,4 +1,9 @@
 ws_address = "ws://127.0.0.1:9000/_ws"
-target_address = "127.0.0.1:4200"
-target_secure = false 
+targets = [
+    { host = "127.0.0.1:3001", secure = false, source_path = "/webhooks/slackWebhooks", dest_path = "/slackWebhooks" },
+    { host = "127.0.0.1:3002", secure = false, source_path = "/webhooks/githubWebhook", dest_path = "/githubWebhook" },
+
+    # Catch all routes
+    { host = "127.0.0.1:4200", secure = false, source_path = "/", dest_path = "/" },
+]
 jwt_secret = "secret"

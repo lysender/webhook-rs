@@ -1,0 +1,13 @@
+[package]
+name = "webhook"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chrono.workspace = true
+jsonwebtoken.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+zerror = { path = "../zerror" }

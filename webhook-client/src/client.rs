@@ -18,10 +18,13 @@ use tungstenite::client::IntoClientRequest;
 // we will use tungstenite for websocket client impl (same library as what axum is using)
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 
-use crate::context::ClientContext;
-use crate::message::{ResponseLine, TunnelMessage};
-use crate::message::{StatusLine, WebhookHeader};
-use crate::{config::ClientConfig, token::create_auth_token, Result};
+use crate::config::Config;
+use crate::config::ProxyTarget;
+use crate::context::Context;
+use webhook::message::{ResponseLine, TunnelMessage};
+use webhook::message::{StatusLine, WebhookHeader};
+use webhook::token::create_auth_token;
+use zerror::Result;
 
 pub struct ClientTunnelReceiver {
     stream: Option<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>,
@@ -72,7 +75,7 @@ impl ClientTunnelSender {
     }
 }
 
-pub async fn start_client(ctx: Arc<ClientContext>) {
+pub async fn start_client(ctx: Arc<Context>) {
     loop {
         let ctx_clone = ctx.clone();
         let res = ws_main(ctx_clone).await;
@@ -85,9 +88,9 @@ pub async fn start_client(ctx: Arc<ClientContext>) {
     }
 }
 
-async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
+async fn ws_main(ctx: Arc<Context>) -> Result<()> {
     let token = create_auth_token(ctx.config.jwt_secret.as_str()).unwrap();
-    let ws_address = ctx.config.ws_address.clone();
+    let ws_address = ctx.config.server_address.clone();
     let mut req = ws_address.as_str().into_client_request().unwrap();
     req.headers_mut()
         .insert("authorization", token.as_str().parse().unwrap());
@@ -132,7 +135,7 @@ async fn ws_main(ctx: Arc<ClientContext>) -> Result<()> {
     Err("Websocket client exited.".into())
 }
 
-async fn ping_task(ctx: Arc<ClientContext>, sender: Arc<Mutex<ClientTunnelSender>>) -> Result<()> {
+async fn ping_task(ctx: Arc<Context>, sender: Arc<Mutex<ClientTunnelSender>>) -> Result<()> {
     loop {
         if ctx.is_stale_connection(Instant::now()).await {
             error!("Connection is stale. Terminating.");
@@ -159,7 +162,7 @@ async fn ping_task(ctx: Arc<ClientContext>, sender: Arc<Mutex<ClientTunnelSender
 }
 
 async fn send_task(
-    ctx: Arc<ClientContext>,
+    ctx: Arc<Context>,
     sender: Arc<Mutex<ClientTunnelSender>>,
     crawler: Client,
 ) -> Result<()> {
@@ -178,10 +181,7 @@ async fn send_task(
     Ok(())
 }
 
-async fn recv_task(
-    ctx: Arc<ClientContext>,
-    receiver: Arc<Mutex<ClientTunnelReceiver>>,
-) -> Result<()> {
+async fn recv_task(ctx: Arc<Context>, receiver: Arc<Mutex<ClientTunnelReceiver>>) -> Result<()> {
     loop {
         let received = {
             let mut tunnel = receiver.lock().await;
@@ -208,7 +208,7 @@ async fn recv_task(
     Err("Websocket receiver task exited.".into())
 }
 
-async fn handle_ws_message(ctx: Arc<ClientContext>, msg: Message) -> ControlFlow<()> {
+async fn handle_ws_message(ctx: Arc<Context>, msg: Message) -> ControlFlow<()> {
     match msg {
         Message::Pong(_) => {
             ctx.update_pong(Instant::now()).await;
@@ -230,7 +230,7 @@ async fn handle_ws_message(ctx: Arc<ClientContext>, msg: Message) -> ControlFlow
 }
 
 async fn handle_forward(
-    ctx: Arc<ClientContext>,
+    ctx: Arc<Context>,
     crawler: Client,
     sender: Arc<Mutex<ClientTunnelSender>>,
     message: TunnelMessage,
@@ -249,9 +249,16 @@ async fn handle_forward(
     Ok(())
 }
 
+fn find_target<'a>(config: &'a Config, uri: &str) -> Option<&'a ProxyTarget> {
+    config
+        .targets
+        .iter()
+        .find(|target| uri.starts_with(&target.source_path))
+}
+
 async fn handle_target_response(
     crawler: Client,
-    config: Arc<ClientConfig>,
+    config: Arc<Config>,
     message: TunnelMessage,
 ) -> Result<TunnelMessage> {
     let st_opt = match message.http_line {
@@ -270,13 +277,17 @@ async fn handle_target_response(
         req_id.to_string()
     );
 
+    // Detect from which target the request is for
+    // Route request to that target
+    let target = find_target(&config, uri).expect("Target is required for the route.");
+
     // Figure out the method
     // We assume that the target is a localhost address
-    let protocol = match config.target_secure {
+    let protocol = match target.secure {
         true => "https",
         false => "http",
     };
-    let url = format!("{}://{}{}", protocol, &config.target_address, uri);
+    let url = format!("{}://{}{}", protocol, &target.host, uri);
 
     let mut r = crawler.request(ReqwestMethod::from_bytes(method.as_bytes()).unwrap(), url);
 
@@ -284,7 +295,7 @@ async fn handle_target_response(
     for (k, v) in message.http_headers.iter() {
         if k == "host" {
             // Rename host to the proxied target host
-            r = r.header("host", &config.target_address);
+            r = r.header("host", &target.host);
         } else {
             r = r.header(k, v);
         }

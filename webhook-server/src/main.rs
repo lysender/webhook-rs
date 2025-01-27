@@ -2,10 +2,14 @@ use clap::Parser;
 use std::{process, sync::Arc};
 use tracing::error;
 
-use webhook_rs::config::{ServerAppArgs, ServerConfig, RUST_LOG};
-use webhook_rs::context::ServerContext;
-use webhook_rs::web::start_web_server;
-use webhook_rs::{Error, Result};
+use crate::config::{AppArgs, Config, RUST_LOG};
+use crate::context::Context;
+use crate::web::start_web_server;
+use zerror::{Error, Result};
+
+pub mod config;
+pub mod context;
+pub mod web;
 
 #[tokio::main]
 async fn main() {
@@ -19,7 +23,7 @@ async fn main() {
         .compact()
         .init();
 
-    let args = ServerAppArgs::parse();
+    let args = AppArgs::parse();
 
     if let Err(e) = run_command(args).await {
         eprintln!("Application error: {e}");
@@ -27,9 +31,9 @@ async fn main() {
     }
 }
 
-async fn run_command(args: ServerAppArgs) -> Result<()> {
-    let config = ServerConfig::build(args.config.as_path())?;
-    let ctx = Arc::new(ServerContext::new(config));
+async fn run_command(args: AppArgs) -> Result<()> {
+    let config = Config::build(args.config.as_path())?;
+    let ctx = Arc::new(Context::new(config));
 
     if let Err(e) = start_web_server(ctx).await {
         let msg = format!("Error starting servers: {e}");

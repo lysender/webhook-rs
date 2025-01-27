@@ -1,6 +1,6 @@
 # Webhook mode
 web_address = "127.0.0.1:9000"
-webhook_path = "/webhook"
+webhook_path = "/webhooks"
 jwt_secret = "secret"
 
 # Website mode

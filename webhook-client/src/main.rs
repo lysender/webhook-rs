@@ -1,11 +1,15 @@
 use clap::Parser;
 use std::{process, sync::Arc};
 
-use webhook_rs::client::start_client;
-use webhook_rs::config::{ClientAppArgs, ClientConfig, RUST_LOG};
-use webhook_rs::context::ClientContext;
+pub mod client;
+pub mod config;
+pub mod context;
 
-use webhook_rs::Result;
+use crate::client::start_client;
+use crate::config::{AppArgs, Config, RUST_LOG};
+use crate::context::Context;
+
+use zerror::Result;
 
 #[tokio::main]
 async fn main() {
@@ -19,7 +23,7 @@ async fn main() {
         .compact()
         .init();
 
-    let args = ClientAppArgs::parse();
+    let args = AppArgs::parse();
 
     if let Err(e) = run_command(args).await {
         eprintln!("Application error: {e}");
@@ -27,9 +31,9 @@ async fn main() {
     }
 }
 
-async fn run_command(args: ClientAppArgs) -> Result<()> {
-    let config = ClientConfig::build(args.config.as_path())?;
-    let ctx = Arc::new(ClientContext::new(config));
+async fn run_command(args: AppArgs) -> Result<()> {
+    let config = Config::build(args.config.as_path())?;
+    let ctx = Arc::new(Context::new(config));
     start_client(ctx).await;
 
     Ok(())

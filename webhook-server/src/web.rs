@@ -31,14 +31,13 @@ use axum::extract::connect_info::ConnectInfo;
 // Allows to split the websocket stream into separate TX and RX branches
 use futures::{sink::SinkExt, stream::StreamExt};
 
-use crate::context::ServerContext;
-use crate::message::HttpLine;
-use crate::message::StatusLine;
-use crate::message::TunnelMessage;
-use crate::message::WebhookHeader;
-use crate::token::verify_auth_token;
-use crate::Error;
-use crate::Result;
+use crate::context::Context;
+use webhook::message::HttpLine;
+use webhook::message::StatusLine;
+use webhook::message::TunnelMessage;
+use webhook::message::WebhookHeader;
+use webhook::token::verify_auth_token;
+use zerror::{Error, Result};
 
 pub struct TunnelReceiver {
     stream: Option<SplitStream<WebSocket>>,
@@ -101,10 +100,10 @@ impl TunnelSender {
 
 #[derive(Clone, FromRef)]
 pub struct AppState {
-    ctx: Arc<ServerContext>,
+    ctx: Arc<Context>,
 }
 
-pub async fn start_web_server(ctx: Arc<ServerContext>) -> Result<()> {
+pub async fn start_web_server(ctx: Arc<Context>) -> Result<()> {
     let arc_config = ctx.config.clone();
     let web_address = arc_config.web_address.clone();
     let webhook_path = arc_config.webhook_path.clone();
@@ -283,7 +282,7 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(ctx.clone(), socket, addr))
 }
 
-async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAddr) {
+async fn handle_socket(ctx: Arc<Context>, socket: WebSocket, who: SocketAddr) {
     // We know, at this point, that there is a connected client
     ctx.verify().await;
 
@@ -311,7 +310,7 @@ async fn handle_socket(ctx: Arc<ServerContext>, socket: WebSocket, who: SocketAd
     info!("Websocket client connection {} closed", who);
 }
 
-async fn ping_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
+async fn ping_task(ctx: Arc<Context>, sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
     loop {
         if ctx.is_stale_connection(Instant::now()).await {
             error!("Connection is stale. Terminating.");
@@ -336,7 +335,7 @@ async fn ping_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) ->
     Err("Ping task ended".into())
 }
 
-async fn send_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
+async fn send_task(ctx: Arc<Context>, sender: Arc<Mutex<TunnelSender>>) -> Result<()> {
     loop {
         if let Some(message) = ctx.get_request().await {
             let res = {
@@ -354,7 +353,7 @@ async fn send_task(ctx: Arc<ServerContext>, sender: Arc<Mutex<TunnelSender>>) ->
     Err("Send task ended".into())
 }
 
-async fn recv_task(ctx: Arc<ServerContext>, receiver: Arc<Mutex<TunnelReceiver>>) -> Result<()> {
+async fn recv_task(ctx: Arc<Context>, receiver: Arc<Mutex<TunnelReceiver>>) -> Result<()> {
     loop {
         let received = {
             let mut stream = receiver.lock().await;
@@ -381,7 +380,7 @@ async fn recv_task(ctx: Arc<ServerContext>, receiver: Arc<Mutex<TunnelReceiver>>
     Err("Receive task ended".into())
 }
 
-async fn handle_ws_message(ctx: Arc<ServerContext>, msg: Message) -> ControlFlow<()> {
+async fn handle_ws_message(ctx: Arc<Context>, msg: Message) -> ControlFlow<()> {
     match msg {
         Message::Pong(_) => {
             ctx.update_pong(Instant::now()).await;
