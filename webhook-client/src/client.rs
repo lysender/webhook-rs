@@ -269,7 +269,7 @@ async fn handle_target_response(
     let method = st.method.as_str();
     let uri = st.path.as_str();
 
-    let req_id = message.header.id.clone();
+    let req_id = message.header.id;
     info!(
         "Forwarding request: {} {} ID={}",
         method,
@@ -305,7 +305,7 @@ async fn handle_target_response(
 
     // Do not follow redirects
 
-    if message.http_body.len() > 0 {
+    if !message.http_body.is_empty() {
         r = r.body(message.http_body);
     }
 

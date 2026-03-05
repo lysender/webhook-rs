@@ -209,7 +209,7 @@ async fn webhook_handler(state: State<AppState>, request: Request) -> Response<B
     );
 
     // Add original body if present
-    let with_body = vec!["POST", "PUT", "PATCH"];
+    let with_body = ["POST", "PUT", "PATCH"];
     if with_body.contains(&method.as_str()) {
         let body_bytes = to_bytes(request.into_body(), usize::MAX).await.unwrap();
         http_req.http_body = body_bytes.to_vec();
@@ -275,7 +275,7 @@ async fn ws_handler(
 
     let secret = ctx.config.jwt_secret.as_str();
     let auth_token = auth_token.to_str().unwrap();
-    if let Err(_) = verify_auth_token(auth_token, secret) {
+    if verify_auth_token(auth_token, secret).is_err() {
         return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
     }
 
@@ -397,7 +397,7 @@ async fn handle_ws_message(ctx: Arc<Context>, msg: Message) -> ControlFlow<()> {
                 ControlFlow::Continue(())
             }
         },
-        Message::Close(_) => return ControlFlow::Break(()),
+        Message::Close(_) => ControlFlow::Break(()),
         _ => ControlFlow::Continue(()),
     }
 }

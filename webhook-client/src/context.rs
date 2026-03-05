@@ -10,6 +10,12 @@ pub struct TunnelState {
     verified: Mutex<bool>,
 }
 
+impl Default for TunnelState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TunnelState {
     pub fn new() -> Self {
         Self {

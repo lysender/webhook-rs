@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use uuid::Uuid;
 
 use crate::{Error, Result};
@@ -47,12 +49,14 @@ impl WebhookHeader {
         })
     }
 
-    pub fn to_string(&self) -> String {
-        format!("{} {}\r\n", self.version, self.id.to_string())
-    }
-
     pub fn into_bytes(&self) -> Vec<u8> {
         self.to_string().into_bytes()
+    }
+}
+
+impl Display for WebhookHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}\r\n", self.version, self.id)
     }
 }
 
@@ -98,12 +102,14 @@ impl HttpLine {
         })
     }
 
-    pub fn to_string(&self) -> String {
-        format!("{} {} {}\r\n", self.method, self.path, self.version)
-    }
-
     pub fn into_bytes(&self) -> Vec<u8> {
         self.to_string().into_bytes()
+    }
+}
+
+impl Display for HttpLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {} {}\r\n", self.method, self.path, self.version)
     }
 }
 
@@ -142,17 +148,20 @@ impl ResponseLine {
         })
     }
 
-    pub fn to_string(&self) -> String {
-        format!(
+    pub fn into_bytes(&self) -> Vec<u8> {
+        self.to_string().into_bytes()
+    }
+}
+
+impl Display for ResponseLine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
             "{} {} {}\r\n",
             self.version,
             self.status_code,
             self.message.as_deref().unwrap_or("")
         )
-    }
-
-    pub fn into_bytes(&self) -> Vec<u8> {
-        self.to_string().into_bytes()
     }
 }
 
@@ -171,17 +180,11 @@ impl StatusLine {
     }
 
     pub fn is_request(&self) -> bool {
-        match self {
-            StatusLine::Request(_) => true,
-            _ => false,
-        }
+        matches!(self, StatusLine::Request(_))
     }
 
     pub fn is_response(&self) -> bool {
-        match self {
-            StatusLine::Response(_) => true,
-            _ => false,
-        }
+        matches!(self, StatusLine::Response(_))
     }
 
     pub fn is_ok(&self) -> bool {
@@ -292,11 +295,11 @@ impl TunnelMessage {
         // Headers
         for (k, v) in self.http_headers.iter() {
             let header_line = format!("{}: {}\r\n", k, v);
-            buffer.extend_from_slice(&header_line.as_bytes());
+            buffer.extend_from_slice(header_line.as_bytes());
         }
 
         // If there is a body, insert a blank line then the body
-        if self.http_body.len() > 0 {
+        if !self.http_body.is_empty() {
             buffer.extend_from_slice(b"\r\n");
             buffer.extend_from_slice(&self.http_body);
         }
@@ -307,7 +310,7 @@ impl TunnelMessage {
 
 // Parses buffer for header data, include body start index if present
 fn read_buffer_header(buffer: &[u8]) -> Option<BufferHeader> {
-    if buffer.len() == 0 {
+    if buffer.is_empty() {
         return None;
     }
 
@@ -326,7 +329,7 @@ fn read_buffer_header(buffer: &[u8]) -> Option<BufferHeader> {
     }
 
     // The entire data might be all headers
-    let data = String::from_utf8_lossy(&buffer).to_string();
+    let data = String::from_utf8_lossy(buffer).to_string();
     Some(BufferHeader {
         data,
         body_start: None,

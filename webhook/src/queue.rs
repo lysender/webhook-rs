@@ -18,6 +18,12 @@ pub struct MessageQueue {
     notify: Notify,
 }
 
+impl Default for MessageQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageQueue {
     pub fn new() -> Self {
         Self {
@@ -55,6 +61,12 @@ impl MessageQueue {
             messages.clear();
         }
         self.notify.notify_waiters();
+    }
+}
+
+impl Default for MessageMap {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

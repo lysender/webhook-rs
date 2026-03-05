@@ -27,7 +27,7 @@ impl Config {
             jwt_secret,
         };
 
-        if config.webhook_path.len() == 0 {
+        if config.webhook_path.is_empty() {
             return Err(Error::ConfigInvalidError(
                 "Webhook path must not be empty.".to_string(),
             ));
@@ -35,15 +35,13 @@ impl Config {
 
         // Allow either "*" or "/foo-bar" format
         let wh_path = config.webhook_path.as_str();
-        if wh_path != "*" {
-            if !valid_webhook_path(wh_path) {
-                return Err(Error::ConfigInvalidError(
-                    "Webhook path must be in this format: /foo-bar".to_string(),
-                ));
-            }
+        if wh_path != "*" && !valid_webhook_path(wh_path) {
+            return Err(Error::ConfigInvalidError(
+                "Webhook path must be in this format: /foo-bar".to_string(),
+            ));
         }
 
-        if config.jwt_secret.len() == 0 {
+        if config.jwt_secret.is_empty() {
             return Err(Error::ConfigInvalidError(
                 "JWT secret must no be empty.".to_string(),
             ));
