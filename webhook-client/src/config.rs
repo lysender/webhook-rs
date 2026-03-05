@@ -12,6 +12,7 @@ pub const RUST_LOG: &str = "RUST_LOG";
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProxyTarget {
     pub host: String,
+    #[serde(default)]
     pub secure: bool,
     pub source_path: String,
     pub dest_path: String,

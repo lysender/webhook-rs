@@ -1,9 +1,13 @@
 ws_address = "ws://127.0.0.1:9000/_ws"
 targets = [
-    { host = "127.0.0.1:3001", secure = false, source_path = "/webhooks/slackWebhooks", dest_path = "/slackWebhooks" },
-    { host = "127.0.0.1:3002", secure = false, source_path = "/webhooks/githubWebhook", dest_path = "/githubWebhook" },
+    # secure defaults to false when omitted
+    { host = "127.0.0.1:3001", source_path = "/webhooks/slackWebhooks", dest_path = "/slackWebhooks" },
+    { host = "127.0.0.1:3002", source_path = "/webhooks/githubWebhook", dest_path = "/githubWebhook" },
+
+    # Example of explicitly enabling TLS
+    { host = "example.com:443", secure = true, source_path = "/webhooks/payment", dest_path = "/payment" },
 
     # Catch all routes
-    { host = "127.0.0.1:4200", secure = false, source_path = "/", dest_path = "/" },
+    { host = "127.0.0.1:4200", source_path = "/", dest_path = "/" },
 ]
 jwt_secret = "secret"
