@@ -25,3 +25,5 @@ Cargo.lock
 config-client.toml
 config-client-dev.toml
 config-client-prod.toml
+
+docker-compose.yml

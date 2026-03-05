@@ -1,0 +1,33 @@
+services:
+  web0:
+    platform: linux/arm64
+    container_name: webhook-server
+    build:
+      context: .
+    image: lysender/webhook-server:latest
+    ports:
+      - "127.0.0.1:14000:14000"
+    environment:
+      WEBHOOK_SERVER_WEB_ADDRESS: "0.0.0.0:14000"
+      WEBHOOK_SERVER_WEBHOOK_PATH: "/webhooks"
+      WEBHOOK_SERVER_JWT_SECRET: "super-strong-sercret-1"
+
+  web1:
+    container_name: webhook-server-extra1
+    image: lysender/webhook-server:latest
+    ports:
+      - "127.0.0.1:14001:14000"
+    environment:
+      WEBHOOK_SERVER_WEB_ADDRESS: "0.0.0.0:14000"
+      WEBHOOK_SERVER_WEBHOOK_PATH: "/webhooks"
+      WEBHOOK_SERVER_JWT_SECRET: "super-strong-sercret-1"
+
+  web2:
+    container_name: webhook-server-extra2
+    image: lysender/webhook-server:latest
+    ports:
+      - "127.0.0.1:14002:14000"
+    environment:
+      WEBHOOK_SERVER_WEB_ADDRESS: "0.0.0.0:14000"
+      WEBHOOK_SERVER_WEBHOOK_PATH: "/webhooks"
+      WEBHOOK_SERVER_JWT_SECRET: "super-strong-sercret-2"

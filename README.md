@@ -96,6 +96,33 @@ targets = [
 jwt_secret = "super-strong-secret"
 ```
 
+## Docker
+
+Webhook server supports Docker deployment:
+- Either build the webhook-server binary locally and upload to the server or
+- Build the binary on the server
+- Build the Docker image and containers based on the example docker-compose.yml
+
+To build the binary on the server (not advisable):
+
+```bash
+cd /path/to/webhook-rs;
+cargo build -p webhook-server --release;
+```
+
+Better option is to build the binary locally and upload to the server on the same path:
+
+```bash
+target/release/webhook-server
+```
+
+Create a `docker-compose.yml` based on the example given, then run docker-compose.
+
+```bash
+cd /path/to/webhook-rs;
+docker compose up -d
+```
+
 ## What's the target?
 
 The target is your actual application that has a webhook endpoint. An example would be
