@@ -1,8 +1,7 @@
-use clap::Parser;
 use std::{process, sync::Arc};
 use tracing::error;
 
-use crate::config::{AppArgs, Config, RUST_LOG};
+use crate::config::{Config, RUST_LOG};
 use crate::context::Context;
 use crate::web::start_web_server;
 use webhook::{Error, Result};
@@ -23,16 +22,14 @@ async fn main() {
         .compact()
         .init();
 
-    let args = AppArgs::parse();
-
-    if let Err(e) = run_command(args).await {
+    if let Err(e) = run_command().await {
         eprintln!("Application error: {e}");
         process::exit(1);
     }
 }
 
-async fn run_command(args: AppArgs) -> Result<()> {
-    let config = Config::build(args.config.as_path())?;
+async fn run_command() -> Result<()> {
+    let config = Config::build()?;
     let ctx = Arc::new(Context::new(config));
 
     if let Err(e) = start_web_server(ctx).await {

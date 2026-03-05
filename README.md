@@ -50,23 +50,28 @@ build it locally and upload to the server.
 If you choose to build locally, make sure your OS is the same with the server.
 
 ```bash
-/path/to/webhook-server --config config-server.toml
+export WEBHOOK_SERVER_WEB_ADDRESS="127.0.0.1:9000"
+export WEBHOOK_SERVER_WEBHOOK_PATH="/webhooks"
+export WEBHOOK_SERVER_JWT_SECRET="super-strong-secret"
+/path/to/webhook-server
 ```
+
+See `.env.example-server` for a starter file.
 
 Configuration (webhook mode):
 
-```toml
-web_address = "127.0.0.1:9000"
-webhook_path = "/webhooks"
-jwt_secret = "super-strong-secret"
+```env
+WEBHOOK_SERVER_WEB_ADDRESS=127.0.0.1:9000
+WEBHOOK_SERVER_WEBHOOK_PATH=/webhooks
+WEBHOOK_SERVER_JWT_SECRET=super-strong-secret
 ```
 
 Website mode:
 
-```toml
-web_address = "127.0.0.1:9000"
-webhook_path = "*"
-jwt_secret = "super-strong-secret"
+```env
+WEBHOOK_SERVER_WEB_ADDRESS=127.0.0.1:9000
+WEBHOOK_SERVER_WEBHOOK_PATH=*
+WEBHOOK_SERVER_JWT_SECRET=super-strong-secret
 ```
 
 ## Client
