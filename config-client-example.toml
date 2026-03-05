@@ -1,4 +1,4 @@
-ws_address = "ws://127.0.0.1:9000/_ws"
+server_address = "ws://127.0.0.1:14000/_ws"
 targets = [
     # secure defaults to false when omitted
     { host = "127.0.0.1:3001", source_path = "/webhooks/slackWebhooks", dest_path = "/slackWebhooks" },

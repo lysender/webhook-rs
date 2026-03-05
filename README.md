@@ -50,7 +50,7 @@ build it locally and upload to the server.
 If you choose to build locally, make sure your OS is the same with the server.
 
 ```bash
-export WEBHOOK_SERVER_WEB_ADDRESS="127.0.0.1:9000"
+export WEBHOOK_SERVER_WEB_ADDRESS="127.0.0.1:14000"
 export WEBHOOK_SERVER_WEBHOOK_PATH="/webhooks"
 export WEBHOOK_SERVER_JWT_SECRET="super-strong-secret"
 /path/to/webhook-server
@@ -61,7 +61,7 @@ See `.env.example-server` for a starter file.
 Configuration (webhook mode):
 
 ```env
-WEBHOOK_SERVER_WEB_ADDRESS=127.0.0.1:9000
+WEBHOOK_SERVER_WEB_ADDRESS=127.0.0.1:14000
 WEBHOOK_SERVER_WEBHOOK_PATH=/webhooks
 WEBHOOK_SERVER_JWT_SECRET=super-strong-secret
 ```
@@ -69,7 +69,7 @@ WEBHOOK_SERVER_JWT_SECRET=super-strong-secret
 Website mode:
 
 ```env
-WEBHOOK_SERVER_WEB_ADDRESS=127.0.0.1:9000
+WEBHOOK_SERVER_WEB_ADDRESS=127.0.0.1:14000
 WEBHOOK_SERVER_WEBHOOK_PATH=*
 WEBHOOK_SERVER_JWT_SECRET=super-strong-secret
 ```
@@ -85,7 +85,7 @@ Run the app as a client.
 Configuration:
 
 ```toml
-server_address = "ws://127.0.0.1:9000/_ws"
+server_address = "ws://127.0.0.1:14000/_ws"
 targets = [
     { host = "127.0.0.1:3001", secure = false, source_path = "/webhooks/slackWebhooks", dest_path = "/slackWebhooks" },
     { host = "127.0.0.1:3002", secure = false, source_path = "/webhooks/githubWebhook", dest_path = "/githubWebhook" },
