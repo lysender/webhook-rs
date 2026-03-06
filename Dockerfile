@@ -8,5 +8,5 @@ RUN apt-get update \
 COPY target/release/webhook-server /app/webhook-server
 RUN chmod +x /app/webhook-server
 
-EXPOSE 12000
+EXPOSE 14000
 ENTRYPOINT ["/app/webhook-server"]
