@@ -12,6 +12,7 @@ pub const RUST_LOG: &str = "RUST_LOG";
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProxyTarget {
     pub host: String,
+    #[serde(default)]
     pub secure: bool,
     pub source_path: String,
     pub dest_path: String,
@@ -38,7 +39,7 @@ impl Config {
             Err(error) => return Err(Error::ConfigParseError(error.to_string())),
         };
 
-        if config.server_address.len() == 0 {
+        if config.server_address.is_empty() {
             return Err(Error::ConfigInvalidError(
                 "Websocket address must not be empty.".to_string(),
             ));
@@ -73,7 +74,7 @@ impl Config {
             }
         }
 
-        if config.jwt_secret.len() == 0 {
+        if config.jwt_secret.is_empty() {
             return Err(Error::ConfigInvalidError(
                 "JWT secret must no be empty.".to_string(),
             ));

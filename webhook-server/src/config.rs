@@ -1,16 +1,14 @@
-use clap::Parser;
-use serde::Deserialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::env;
 
 use webhook::utils::valid_webhook_path;
 use webhook::{Error, Result};
 
 pub const RUST_LOG: &str = "RUST_LOG";
+pub const WEBHOOK_SERVER_WEB_ADDRESS: &str = "WEBHOOK_SERVER_WEB_ADDRESS";
+pub const WEBHOOK_SERVER_WEBHOOK_PATH: &str = "WEBHOOK_SERVER_WEBHOOK_PATH";
+pub const WEBHOOK_SERVER_JWT_SECRET: &str = "WEBHOOK_SERVER_JWT_SECRET";
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone)]
 pub struct Config {
     pub web_address: String,
     pub webhook_path: String,
@@ -18,20 +16,18 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn build(filename: &Path) -> Result<Config> {
-        let toml_string = match fs::read_to_string(filename) {
-            Ok(str) => str,
-            Err(error) => {
-                return Err(Error::ConfigReadError(error.to_string()));
-            }
+    pub fn build() -> Result<Config> {
+        let web_address = read_env(WEBHOOK_SERVER_WEB_ADDRESS)?;
+        let webhook_path = read_env(WEBHOOK_SERVER_WEBHOOK_PATH)?;
+        let jwt_secret = read_env(WEBHOOK_SERVER_JWT_SECRET)?;
+
+        let config = Config {
+            web_address,
+            webhook_path,
+            jwt_secret,
         };
 
-        let config: Config = match toml::from_str(toml_string.as_str()) {
-            Ok(value) => value,
-            Err(error) => return Err(Error::ConfigParseError(error.to_string())),
-        };
-
-        if config.webhook_path.len() == 0 {
+        if config.webhook_path.is_empty() {
             return Err(Error::ConfigInvalidError(
                 "Webhook path must not be empty.".to_string(),
             ));
@@ -39,15 +35,13 @@ impl Config {
 
         // Allow either "*" or "/foo-bar" format
         let wh_path = config.webhook_path.as_str();
-        if wh_path != "*" {
-            if !valid_webhook_path(wh_path) {
-                return Err(Error::ConfigInvalidError(
-                    "Webhook path must be in this format: /foo-bar".to_string(),
-                ));
-            }
+        if wh_path != "*" && !valid_webhook_path(wh_path) {
+            return Err(Error::ConfigInvalidError(
+                "Webhook path must be in this format: /foo-bar".to_string(),
+            ));
         }
 
-        if config.jwt_secret.len() == 0 {
+        if config.jwt_secret.is_empty() {
             return Err(Error::ConfigInvalidError(
                 "JWT secret must no be empty.".to_string(),
             ));
@@ -57,10 +51,19 @@ impl Config {
     }
 }
 
-/// webhook-server: Your app's backdoor
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-pub struct AppArgs {
-    #[arg(short, long, value_name = "config.toml")]
-    pub config: PathBuf,
+fn read_env(key: &str) -> Result<String> {
+    match env::var(key) {
+        Ok(value) => {
+            if value.trim().is_empty() {
+                Err(Error::ConfigInvalidError(format!(
+                    "Environment variable {key} must not be empty."
+                )))
+            } else {
+                Ok(value)
+            }
+        }
+        Err(_) => Err(Error::ConfigInvalidError(format!(
+            "Missing environment variable: {key}."
+        ))),
+    }
 }
