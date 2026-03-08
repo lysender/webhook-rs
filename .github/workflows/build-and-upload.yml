@@ -1,0 +1,41 @@
+name: Build and Upload Binary
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: build-upload-main-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-24.04-arm
+    env:
+      S3_UPLOAD_BUCKET: ${{ vars.S3_UPLOAD_BUCKET }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build -p webhook-server --release --locked
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Upload binary to S3
+        run: |
+          test -n "$S3_UPLOAD_BUCKET" || { echo "S3_UPLOAD_BUCKET is not set"; exit 1; }
+          aws s3 cp target/release/webhook-server s3://$S3_UPLOAD_BUCKET/webhook-server/bin/webhook-server
