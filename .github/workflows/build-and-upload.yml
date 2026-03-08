@@ -15,6 +15,8 @@ permissions:
 jobs:
   build-and-upload:
     runs-on: ubuntu-24.04-arm
+    env:
+      S3_UPLOAD_BUCKET: ${{ vars.S3_UPLOAD_BUCKET }}
 
     steps:
       - name: Checkout
@@ -34,4 +36,6 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Upload binary to S3
-        run: aws s3 cp target/release/webhook-server s3://lysender-codedeploy/webhook-server/bin/webhook-server
+        run: |
+          test -n "$S3_UPLOAD_BUCKET" || { echo "S3_UPLOAD_BUCKET is not set"; exit 1; }
+          aws s3 cp target/release/webhook-server s3://$S3_UPLOAD_BUCKET/webhook-server/bin/webhook-server
