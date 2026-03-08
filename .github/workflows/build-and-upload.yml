@@ -26,7 +26,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release binary
-        run: cargo build -p webhook-server --release --locked
+        run: cargo build -p webhook-server --release
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
