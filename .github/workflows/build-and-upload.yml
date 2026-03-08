@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build-and-upload:
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-2vcpu-ubuntu-2404-arm
     env:
       S3_UPLOAD_BUCKET: ${{ vars.S3_UPLOAD_BUCKET }}
 
