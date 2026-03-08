@@ -5,6 +5,8 @@ services:
     build:
       context: .
     image: lysender/webhook-server
+    volumes:
+      - ./build/bin/webhook-server:/app/bin/webhook-server:ro
     ports:
       - "127.0.0.1:14000:14000"
     environment:
@@ -16,6 +18,8 @@ services:
   web1:
     container_name: webhook-server-extra1
     image: lysender/webhook-server
+    volumes:
+      - ./build/bin/webhook-server:/app/bin/webhook-server:ro
     ports:
       - "127.0.0.1:14001:14000"
     environment:
@@ -29,6 +33,8 @@ services:
   web2:
     container_name: webhook-server-extra2
     image: lysender/webhook-server
+    volumes:
+      - ./build/bin/webhook-server:/app/bin/webhook-server:ro
     ports:
       - "127.0.0.1:14002:14000"
     environment:
