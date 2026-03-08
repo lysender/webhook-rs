@@ -5,8 +5,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates libssl3 \
  && rm -rf /var/lib/apt/lists/*
 
-COPY target/release/webhook-server /app/webhook-server
-RUN chmod +x /app/webhook-server
+# Expects bin/webhook-server to be mounted from host
 
 EXPOSE 14000
-ENTRYPOINT ["/app/webhook-server"]
+ENTRYPOINT ["/app/bin/webhook-server"]
